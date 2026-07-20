@@ -13,14 +13,28 @@ struct NRFDevice {
 NRFDevice nrfDevices[20];
 uint8_t nrfDeviceCount = 0;
 
-static int jamChannel = 0;
-static unsigned long jamLastSwitch = 0;
-
-// Scanner - historico de RSSI por canal para ondas
+// Scanner
 static int8_t scanHistory[NRF_SCAN_HISTORY];
 static int scanIndex = 0;
 static bool scanning = false;
 static unsigned long scanLastUpdate = 0;
+
+// Sinais detectados
+struct DetectedSignal {
+    uint8_t channel;
+    int8_t rssi;
+    unsigned long firstSeen;
+    unsigned long lastSeen;
+    bool active;
+};
+static DetectedSignal detectedSignals[NRF_MAX_DETECTED];
+static uint8_t detectedCount = 0;
+
+// Jammer
+static int jamChannel = 0;
+static unsigned long jamLastSwitch = 0;
+static bool jamSelectMode = false;  // false = kill all, true = select channel
+static int jamSelectedChannel = 0;
 
 static void hardResetNRF24() {
     digitalWrite(NRF_CE, LOW);
@@ -50,13 +64,15 @@ bool nrf24Init() {
 }
 
 // ============================================================
-// SCANNER - ONDAS EM TEMPO REAL
+// SCANNER
 // ============================================================
 void nrf24StartScan() {
     scanning = true;
     scanIndex = 0;
     scanLastUpdate = 0;
+    detectedCount = 0;
     for (int i = 0; i < NRF_SCAN_HISTORY; i++) scanHistory[i] = -100;
+    for (int i = 0; i < NRF_MAX_DETECTED; i++) detectedSignals[i].active = false;
     radio.stopListening();
     radio.setAutoAck(false);
     radio.setRetries(0, 0);
@@ -68,28 +84,50 @@ void nrf24StopScan() {
 }
 
 bool nrf24IsScanning() { return scanning; }
-
-// Retorna ponteiro para o historico de 64 amostras
 const int8_t* nrf24GetScanHistory() { return scanHistory; }
-
 int nrf24GetScanIndex() { return scanIndex; }
+
+uint8_t nrf24GetDetectedCount() { return detectedCount; }
+
+DetectedSignal* nrf24GetDetected(uint8_t index) {
+    if (index < detectedCount) return &detectedSignals[index];
+    return nullptr;
+}
 
 void nrf24ScanLoop() {
     if (!scanning) return;
 
-    // Atualiza a cada 15ms = ~66 amostras/segundo
     if (millis() - scanLastUpdate >= 15) {
         scanLastUpdate = millis();
 
-        // Varre canal atual e mede RSSI
-        radio.setChannel(scanIndex % 125);
+        int ch = scanIndex % 125;
+        radio.setChannel(ch);
         delayMicroseconds(200);
 
         bool carrier = radio.testCarrier();
         bool rpd = radio.testRPD();
         int8_t rssi = -100;
         if (carrier || rpd) {
-            rssi = -50 - random(15);  // Simula RSSI quando detecta algo
+            rssi = -50 - random(15);
+            // Adiciona/atualiza sinal detectado
+            bool found = false;
+            for (int i = 0; i < detectedCount; i++) {
+                if (detectedSignals[i].channel == ch) {
+                    detectedSignals[i].rssi = rssi;
+                    detectedSignals[i].lastSeen = millis();
+                    detectedSignals[i].active = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && detectedCount < NRF_MAX_DETECTED) {
+                detectedSignals[detectedCount].channel = ch;
+                detectedSignals[detectedCount].rssi = rssi;
+                detectedSignals[detectedCount].firstSeen = millis();
+                detectedSignals[detectedCount].lastSeen = millis();
+                detectedSignals[detectedCount].active = true;
+                detectedCount++;
+            }
         }
 
         scanHistory[scanIndex] = rssi;
@@ -104,7 +142,7 @@ void nrf24ScanLoop() {
 void nrf24StartJammer() {
     if (nrf24JammerActive) return;
     nrf24JammerActive = true;
-    jamChannel = 0;
+    jamChannel = jamSelectMode ? jamSelectedChannel : 0;
     jamLastSwitch = 0;
     radio.setAutoAck(false);
     radio.stopListening();
@@ -112,8 +150,8 @@ void nrf24StartJammer() {
     radio.setPALevel(RF24_PA_MAX, true);
     radio.setDataRate(RF24_2MBPS);
     radio.setCRCLength(RF24_CRC_DISABLED);
-    radio.setChannel(0);
-    radio.startConstCarrier(RF24_PA_MAX, 0);
+    radio.setChannel(jamChannel);
+    radio.startConstCarrier(RF24_PA_MAX, jamChannel);
 }
 
 void nrf24StopJammer() {
@@ -126,13 +164,34 @@ void nrf24StopJammer() {
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
-    if (micros() - jamLastSwitch >= 500) {
-        jamLastSwitch = micros();
-        jamChannel++;
-        if (jamChannel > 125) jamChannel = 0;
-        radio.setChannel(jamChannel);
+
+    if (jamSelectMode) {
+        // Jammer em canal fixo
+        return jamChannel;
+    } else {
+        // Jammer varre todos os canais
+        if (micros() - jamLastSwitch >= 500) {
+            jamLastSwitch = micros();
+            jamChannel++;
+            if (jamChannel > 125) jamChannel = 0;
+            radio.setChannel(jamChannel);
+        }
+        return jamChannel;
     }
-    return jamChannel;
+}
+
+// Getters/Setters para modo de jammer
+bool nrf24JammerIsSelectMode() { return jamSelectMode; }
+void nrf24JammerSetSelectMode(bool mode) { jamSelectMode = mode; }
+int nrf24JammerGetSelectedChannel() { return jamSelectedChannel; }
+void nrf24JammerSetSelectedChannel(int ch) {
+    if (ch < 0) ch = 0;
+    if (ch > 125) ch = 125;
+    jamSelectedChannel = ch;
+    if (nrf24JammerActive && jamSelectMode) {
+        jamChannel = ch;
+        radio.setChannel(ch);
+    }
 }
 
 uint8_t nrf24GetDeviceCount() { return nrfDeviceCount; }
