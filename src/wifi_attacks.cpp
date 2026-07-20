@@ -40,7 +40,7 @@ void startDeauth(uint8_t networkIndex) {
     deauthActive = true;
     setMAC(deauthFrame, scannedNetworks[networkIndex].bssid, 10);
     setMAC(deauthFrame, scannedNetworks[networkIndex].bssid, 16);
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_mode(WIFI_STA);
     esp_wifi_start();
 }
 
