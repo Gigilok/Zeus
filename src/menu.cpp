@@ -28,7 +28,12 @@ extern ButtonState readButtons();
 extern bool nrf24IsAvailable();
 extern void nrf24StartJammer();
 extern void nrf24StopJammer();
-extern void nrf24Scan();
+extern void nrf24StartScan();
+extern void nrf24StopScan();
+extern void nrf24ScanLoop();
+extern bool nrf24IsScanning();
+extern const int8_t* nrf24GetScanHistory();
+extern int nrf24GetScanIndex();
 extern uint8_t nrf24GetDeviceCount();
 extern bool nrf24IsJammerActive();
 extern int nrf24JammerLoop();
@@ -128,7 +133,6 @@ const char* currentMenuTitle = "";
 int8_t listIndex = 0;
 int8_t listMaxIndex = 0;
 bool inListView = false;
-bool scanning = false;
 bool capturing = false;
 unsigned long captureStartTime = 0;
 
@@ -178,6 +182,7 @@ void goBack() {
         default: enterMenu(MENU_MAIN); break;
     }
     if (nrf24JammerActive) { nrf24StopJammer(); }
+    if (nrf24IsScanning()) nrf24StopScan();
     if (nrf24JammerActive) nrf24StopJammer();
     if (deauthActive) stopDeauth();
     if (cameraFreezeActive) stopCameraFreeze();
@@ -689,12 +694,13 @@ void handleNRF24Jammer(ButtonState btn) {
 }
 
 void handleNRF24Scanner(ButtonState btn) {
-    if (btn == BTN_PRESSED_SELECT && !scanning) {
-        scanning = true;
-        captureStartTime = millis();
-        nrf24Scan();
-        scanning = false;
+    if (!nrf24IsScanning()) {
+        nrf24StartScan();
     }
+    if (btn == BTN_PRESSED_SELECT) {
+        nrf24StopScan();
+    }
+    nrf24ScanLoop();
 }
 
 void handleCC1101Copy(ButtonState btn) {
