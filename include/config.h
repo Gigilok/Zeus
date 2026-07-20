@@ -128,8 +128,9 @@ extern char capturedPassword[64];
 extern bool passwordCaptured;
 extern bool fakeAPEnabled;
 
-// NRF24 Scanner
+// NRF24 Scanner & Jammer
 #define NRF_SCAN_HISTORY    64
 #define NRF_SCAN_BARS       16
+#define NRF_MAX_DETECTED    10
 
 #endif
