@@ -240,48 +240,21 @@ void renderNRF24Jammer() {
     drawMenuHeader("JAM");
 
     if (!nrf24IsJammerActive()) {
-        // Tela de selecao de modo
+        // Tela de selecao: duas opcoes, > indica selecionada
         if (!nrf24JammerIsSelectMode()) {
-            drawCenteredText(20, "KILL ALL", 1);
-            drawCenteredText(40, "> SELECT CH", 1);
+            drawCenteredText(24, "> KILL ALL", 1);
+            drawCenteredText(40, "  SELECT CH", 1);
         } else {
-            // Modo SELECT CH - mostra lista de canais detectados
-            drawCenteredText(12, "SELECT CH", 1);
-            uint8_t dcount = nrf24GetDetectedCount();
-            if (dcount > 0) {
-                getDisplay().setTextSize(1);
-                getDisplay().setTextColor(SSD1306_WHITE);
-                int y = 24;
-                for (int i = 0; i < dcount && i < 4 && y < 56; i++) {
-                    DetectedSignal* sig = nrf24GetDetected(i);
-                    if (sig && sig->active) {
-                        char buf[20];
-                        int sel = nrf24JammerGetSelectedChannel();
-                        if (sig->channel == sel) {
-                            snprintf(buf, 20, ">CH%3d:%d", sig->channel, sig->rssi);
-                        } else {
-                            snprintf(buf, 20, " CH%3d:%d", sig->channel, sig->rssi);
-                        }
-                        getDisplay().setCursor(0, y);
-                        getDisplay().print(buf);
-                        y += 10;
-                    }
-                }
-            } else {
-                drawCenteredText(36, "Scan primeiro!", 1);
-            }
-            char buf[16];
-            snprintf(buf, 16, "CH:%d", nrf24JammerGetSelectedChannel());
-            drawCenteredText(56, buf, 1);
+            drawCenteredText(24, "  KILL ALL", 1);
+            drawCenteredText(40, "> SELECT CH", 1);
         }
     } else {
-        // Jammer ativo - mostra grafico igual ao scanner
+        // Jammer ativo
         int ch = nrf24JammerLoop();
         if (nrf24JammerIsSelectMode()) {
             char buf[16];
             snprintf(buf, 16, "KILL CH%d", ch);
             drawCenteredText(12, buf, 1);
-            // Barra de intensidade simulada
             int h = random(10, 28);
             getDisplay().fillRect(50, 30 - h, 28, h, SSD1306_WHITE);
             getDisplay().drawLine(0, 30, 127, 30, SSD1306_WHITE);
@@ -290,7 +263,6 @@ void renderNRF24Jammer() {
             int pct = (ch * 100) / 125;
             drawCenteredText(12, "KILL ALL", 1);
             drawProgressBar(14, 28, 100, 8, pct);
-            // Ondas simuladas
             for (int i = 0; i < 16; i++) {
                 int h = random(2, 20);
                 getDisplay().fillRect(i * 8, 50 - h, 6, h, SSD1306_WHITE);
@@ -772,8 +744,7 @@ void renderNRF24Analyze() {
     drawMenuHeader("ANALISAR");
     uint8_t dcount = nrf24GetDetectedCount();
     if (dcount == 0) {
-        drawCenteredText(28, "Nenhum", 1);
-        drawCenteredText(40, "sinal", 1);
+        drawCenteredText(28, "Analisando...", 1);
     } else {
         uint8_t sel = nrf24GetAnalyzeSelected();
         for (int i = 0; i < dcount && i < 5; i++) {
@@ -813,6 +784,11 @@ void renderNRF24AnalyzeDetail() {
 }
 
 void handleNRF24Analyze(ButtonState btn) {
+    static bool analyzed = false;
+    if (!analyzed) {
+        nrf24StartAnalyze();
+        analyzed = true;
+    }
     uint8_t dcount = nrf24GetDetectedCount();
     if (btn == BTN_PRESSED_UP) {
         uint8_t sel = nrf24GetAnalyzeSelected();
@@ -825,6 +801,9 @@ void handleNRF24Analyze(ButtonState btn) {
     if (btn == BTN_PRESSED_SELECT && dcount > 0) {
         previousMenu = currentMenu;
         currentMenu = MENU_NRF24_ANALYZE_DETAIL;
+    }
+    if (btn == BTN_PRESSED_BACK) {
+        analyzed = false;
     }
 }
 
@@ -846,42 +825,16 @@ void handleNRF24AnalyzeDetail(ButtonState btn) {
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
     if (!nrf24IsJammerActive()) {
-        // Selecao de modo
-        if (btn == BTN_PRESSED_SELECT) {
-            nrf24StartJammer();
-            return;
-        }
+        // Selecao de modo: UP/DOWN alterna entre KILL ALL e SELECT CH
         if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
             nrf24JammerSetSelectMode(!nrf24JammerIsSelectMode());
         }
-        // No modo select, UP/DOWN navega pelos canais detectados
-        if (nrf24JammerIsSelectMode()) {
-            uint8_t dcount = nrf24GetDetectedCount();
-            if (dcount > 0 && btn == BTN_PRESSED_UP) {
-                int current = nrf24JammerGetSelectedChannel();
-                int next = 125;
-                for (int i = 0; i < dcount; i++) {
-                    DetectedSignal* sig = nrf24GetDetected(i);
-                    if (sig && sig->active && sig->channel > current && sig->channel < next) {
-                        next = sig->channel;
-                    }
-                }
-                if (next < 125) nrf24JammerSetSelectedChannel(next);
-            }
-            if (dcount > 0 && btn == BTN_PRESSED_DOWN) {
-                int current = nrf24JammerGetSelectedChannel();
-                int prev = -1;
-                for (int i = 0; i < dcount; i++) {
-                    DetectedSignal* sig = nrf24GetDetected(i);
-                    if (sig && sig->active && sig->channel < current && sig->channel > prev) {
-                        prev = sig->channel;
-                    }
-                }
-                if (prev >= 0) nrf24JammerSetSelectedChannel(prev);
-            }
+        // SELECT inicia o jammer no modo atual
+        if (btn == BTN_PRESSED_SELECT) {
+            nrf24StartJammer();
         }
     } else {
-        // Jammer rodando
+        // Jammer rodando - SELECT para
         nrf24JammerLoop();
         if (btn == BTN_PRESSED_SELECT) {
             nrf24StopJammer();
