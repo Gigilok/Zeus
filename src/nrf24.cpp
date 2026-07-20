@@ -260,7 +260,7 @@ int nrf24JammerLoop() {
     // Atualiza dados reais do gráfico baseado na atividade do jammer
     jamHistoryIndex = (jamHistoryIndex + 1) % 16;
     if (jamSelectMode) {
-        // No select mode, a barra do canal selecionado fica alta
+        // No select mode, a barra do canal selecionado fica alta (FIXO no canal)
         for (int i = 0; i < 16; i++) {
             if (i == (jamChannel / 8)) {
                 jamHistory[i] = min(jamHistory[i] + 10, 40);
@@ -268,6 +268,8 @@ int nrf24JammerLoop() {
                 jamHistory[i] = max(jamHistory[i] - 5, 2);
             }
         }
+        // MANTÉM no canal selecionado - NÃO muda de canal
+        return jamChannel;
     } else {
         // No kill all, varia conforme o canal atual
         int activeBar = (jamChannel / 8) % 16;
@@ -280,8 +282,7 @@ int nrf24JammerLoop() {
         }
     }
 
-    if (jamSelectMode) return jamChannel;
-
+    // Só muda de canal no modo KILL ALL
     if (micros() - jamLastSwitch >= 500) {
         jamLastSwitch = micros();
         jamChannel++;
