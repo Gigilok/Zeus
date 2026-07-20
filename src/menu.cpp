@@ -279,22 +279,22 @@ void renderNRF24Scanner() {
             if (h > 28) h = 28;
             int x = i * 8;
             int y = 32 - h;
-            display.fillRect(x, y, 6, h, SSD1306_WHITE);
+            getDisplay().fillRect(x, y, 6, h, SSD1306_WHITE);
         }
-        display.drawLine(0, 32, 127, 32, SSD1306_WHITE);
+        getDisplay().drawLine(0, 32, 127, 32, SSD1306_WHITE);
 
         // Lista de sinais detectados (parte inferior)
         uint8_t dcount = nrf24GetDetectedCount();
         if (dcount > 0) {
-            display.setTextSize(1);
-            display.setTextColor(SSD1306_WHITE);
+            getDisplay().setTextSize(1);
+            getDisplay().setTextColor(SSD1306_WHITE);
             for (int i = 0; i < dcount && i < 3; i++) {
                 DetectedSignal* sig = nrf24GetDetected(i);
                 if (sig && sig->active) {
                     char buf[20];
                     snprintf(buf, 20, "CH%3d:%d", sig->channel, sig->rssi);
-                    display.setCursor(0, 34 + i * 10);
-                    display.print(buf);
+                    getDisplay().setCursor(0, 34 + i * 10);
+                    getDisplay().print(buf);
                 }
             }
         } else {
