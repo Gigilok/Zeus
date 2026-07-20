@@ -1,4 +1,11 @@
 #include "config.h"
+#include <Adafruit_SSD1306.h>
+
+struct NRFDevice {
+    uint8_t address[5];
+    uint8_t channel;
+    int8_t rssi;
+};
 
 // Forward declarations
 extern void clearDisplay();
@@ -13,6 +20,7 @@ extern void showLoading(const char* text, int percent);
 extern void showSplashScreen();
 extern void setBrightness(uint8_t brightness);
 extern Adafruit_SSD1306& getDisplay();
+extern NRFDevice* nrf24GetDevice(uint8_t);
 
 extern ButtonState readButtons();
 
