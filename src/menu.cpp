@@ -224,18 +224,14 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 // ============================================================
 void renderNRF24Jammer() {
     clearDisplay();
-    drawMenuHeader("NRF24 JAMMER");
+    drawMenuHeader("NRF24");
     if (nrf24IsJammerActive()) {
-        char buf[32];
-        snprintf(buf, 32, "CH: %d/125", nrf24JammerLoop());
-        drawCenteredText(20, "INTERFERENCIA", 1);
-        drawCenteredText(32, buf, 1);
-        drawCenteredText(46, "ATIVA", 2);
-        drawCenteredText(58, "SEL: Parar", 1);
+        int ch = nrf24JammerLoop();
+        int pct = (ch * 100) / 125;
+        drawCenteredText(18, "JAM", 2);
+        drawProgressBar(14, 38, 100, 8, pct);
     } else {
-        drawCenteredText(25, "Pronto", 1);
-        drawCenteredText(40, "INICIAR", 2);
-        drawCenteredText(58, "SEL: Iniciar", 1);
+        drawCenteredText(32, "JAM", 2);
     }
     updateDisplay();
 }
