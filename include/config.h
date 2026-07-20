@@ -128,4 +128,8 @@ extern char capturedPassword[64];
 extern bool passwordCaptured;
 extern bool fakeAPEnabled;
 
+// NRF24 Scanner
+#define NRF_SCAN_HISTORY    64
+#define NRF_SCAN_BARS       16
+
 #endif
