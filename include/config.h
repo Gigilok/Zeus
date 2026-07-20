@@ -26,7 +26,7 @@
 
 // CC1101 - Usa VSPI (SPI3) - PINOS DIFERENTES!
 #define CC1101_GDO0  4  // Azul
-#define CC1101_CSN   5  // Roxo   <<< MUDADO de 27 para 5 (VSPI CS)
+#define CC1101_CSN  27  // Roxo
 #define CC1101_SCK  14  // Amarelo (VSPI SCK)
 #define CC1101_MOSI 13  // Verde   (VSPI MOSI)
 #define CC1101_MISO 12  // Vermelho (VSPI MISO)
