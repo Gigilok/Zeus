@@ -1,8 +1,8 @@
 #include <SPI.h>
 #include "config.h"
 
-// SPI para CC1101 (VSPI)
-SPIClass* vspi = nullptr;
+// CC1101 usa HSPI compartilhado com NRF24
+// Inicializa SPI aqui uma unica vez para ambos
 
 #define CC1101_IOCFG2   0x00
 #define CC1101_IOCFG0   0x02
@@ -42,6 +42,7 @@ SPIClass* vspi = nullptr;
 #define CC1101_WRITE_BURST  0x40
 
 bool cc1101Initialized = false;
+static bool spiInitialized = false;
 
 const uint32_t commonFrequencies[] = {
     315000000, 433920000, 868350000, 915000000
@@ -52,22 +53,22 @@ void cc1101Deselect() { digitalWrite(CC1101_CSN, HIGH); }
 
 uint8_t cc1101ReadReg(uint8_t reg) {
     cc1101Select();
-    vspi->transfer(reg | CC1101_READ_SINGLE);
-    uint8_t val = vspi->transfer(0x00);
+    SPI.transfer(reg | CC1101_READ_SINGLE);
+    uint8_t val = SPI.transfer(0x00);
     cc1101Deselect();
     return val;
 }
 
 void cc1101WriteReg(uint8_t reg, uint8_t value) {
     cc1101Select();
-    vspi->transfer(reg);
-    vspi->transfer(value);
+    SPI.transfer(reg);
+    SPI.transfer(value);
     cc1101Deselect();
 }
 
 void cc1101SendCommand(uint8_t cmd) {
     cc1101Select();
-    vspi->transfer(cmd);
+    SPI.transfer(cmd);
     cc1101Deselect();
 }
 
@@ -79,11 +80,13 @@ void cc1101SetFrequency(uint32_t freqHz) {
 }
 
 bool cc1101Init() {
-    // Inicializa VSPI com pinos específicos do CC1101
-    vspi = new SPIClass(VSPI);
-    vspi->begin(CC1101_SCK, CC1101_MISO, CC1101_MOSI, CC1101_CSN);
-    vspi->setFrequency(4000000);
-    vspi->setDataMode(SPI_MODE0);
+    // Inicializa HSPI uma unica vez (compartilhado com NRF24)
+    if (!spiInitialized) {
+        SPI.begin(NRF_SCK, NRF_MISO, NRF_MOSI);  // SCK=18, MISO=19, MOSI=23
+        SPI.setFrequency(4000000);
+        SPI.setDataMode(SPI_MODE0);
+        spiInitialized = true;
+    }
 
     pinMode(CC1101_CSN, OUTPUT);
     digitalWrite(CC1101_CSN, HIGH);
@@ -92,19 +95,17 @@ bool cc1101Init() {
 
     // Reset
     cc1101Select();
-    vspi->transfer(CC1101_SRES);
+    SPI.transfer(CC1101_SRES);
     delay(1);
     cc1101Deselect();
     delay(10);
 
-    // Verifica PARTNUM (reg 0x30) - lê com burst para status byte
+    // Verifica PARTNUM (reg 0x30) - CC1101 retorna 0x00
     uint8_t partnum = cc1101ReadReg(0x30);
     uint8_t version = cc1101ReadReg(0x31);
 
-    // CC1101: PARTNUM = 0x00, VERSION = 0x04, 0x14, etc.
-    // Se não respondeu, tenta de novo
+    // Se nao respondeu, tenta de novo
     if (partnum != 0x00) {
-        // Segunda tentativa
         delay(10);
         cc1101SendCommand(CC1101_SRES);
         delay(10);
@@ -138,16 +139,14 @@ bool cc1101Init() {
         cc1101WriteReg(CC1101_TEST0, 0x09);
 
         cc1101Select();
-        vspi->transfer(CC1101_PATABLE | CC1101_WRITE_BURST);
-        for (int i = 0; i < 8; i++) vspi->transfer(0xC0);
+        SPI.transfer(CC1101_PATABLE | CC1101_WRITE_BURST);
+        for (int i = 0; i < 8; i++) SPI.transfer(0xC0);
         cc1101Deselect();
 
         cc1101Initialized = true;
         return true;
     }
 
-    delete vspi;
-    vspi = nullptr;
     return false;
 }
 
@@ -162,7 +161,7 @@ struct SignalCapture {
 SignalCapture currentCapture;
 
 void cc1101StartCapture() {
-    if (!cc1101Initialized || !vspi) return;
+    if (!cc1101Initialized) return;
     cc1101CopyActive = true;
     currentCapture.count = 0;
     currentCapture.active = true;
@@ -174,7 +173,7 @@ void cc1101StartCapture() {
         cc1101SetFrequency(commonFrequencies[f]);
         cc1101SendCommand(CC1101_SRX);
         delay(500);
-        uint8_t rssi_raw = cc1101ReadReg(0x34);  // RSSI register
+        uint8_t rssi_raw = cc1101ReadReg(0x34);
         int rssi = (rssi_raw >= 128) ? (rssi_raw - 256) / 2 - 74 : rssi_raw / 2 - 74;
         if (rssi > bestRssi) {
             bestRssi = rssi;
@@ -220,12 +219,12 @@ void cc1101StartCapture() {
 void cc1101StopCapture() {
     cc1101CopyActive = false;
     currentCapture.active = false;
-    if (vspi) cc1101SendCommand(CC1101_SIDLE);
+    cc1101SendCommand(CC1101_SIDLE);
 }
 
 void cc1101ReplaySignal(uint8_t index) {
     if (index >= savedSignalCount || !savedSignals[index].valid) return;
-    if (!cc1101Initialized || !vspi) return;
+    if (!cc1101Initialized) return;
     cc1101SetFrequency(savedSignals[index].frequency);
     cc1101SendCommand(CC1101_STX);
     for (int i = 0; i < savedSignals[index].length; i++) {
