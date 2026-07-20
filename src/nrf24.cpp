@@ -117,11 +117,11 @@ void nrf24StartAnalyze() {
     detectedCount = 0;
     analyzeSelectedIndex = 0;
     for (int i = 0; i < NRF_MAX_DETECTED; i++) detectedSignals[i].active = false;
-    // Varre todos os canais uma vez para detectar sinais
+    // Varre todos os canais rapidamente
     for (int ch = 0; ch < 125; ch++) {
         radio.setChannel(ch);
         radio.startListening();
-        delayMicroseconds(300);
+        delayMicroseconds(200);
         bool rpd = radio.testRPD();
         if (rpd) {
             int8_t rssi = -64 - random(20);
@@ -141,7 +141,7 @@ void nrf24StartAnalyze() {
             }
         }
         radio.stopListening();
-        delay(5);
+        delayMicroseconds(100);
     }
 }
 
