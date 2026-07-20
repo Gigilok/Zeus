@@ -270,48 +270,47 @@ void renderNRF24Jammer() {
     drawMenuHeader("JAM");
 
     if (!nrf24IsJammerActive()) {
-        // Tela de selecao: duas opcoes, > indica selecionada
-        if (!jammerSelectOption) {
-            drawCenteredText(24, "> KILL ALL", 1);
-            drawCenteredText(40, "  SELECT CH", 1);
+        if (!nrf24JammerIsSelectMode()) {
+            // Tela de selecao KILL ALL / SELECT CH
+            if (!jammerSelectOption) {
+                drawCenteredText(24, "> KILL ALL", 1);
+                drawCenteredText(40, "  SELECT CH", 1);
+            } else {
+                drawCenteredText(24, "  KILL ALL", 1);
+                drawCenteredText(40, "> SELECT CH", 1);
+            }
         } else {
-            drawCenteredText(24, "  KILL ALL", 1);
-            drawCenteredText(40, "> SELECT CH", 1);
+            // SELECT CH: lista de canais para escolher (jammer ainda NAO ativo)
+            char buf[32];
+            snprintf(buf, 32, "CANAL: %d", nrf24JammerGetSelectedChannel());
+            drawCenteredText(10, buf, 1);
+            drawCenteredText(26, "UP/DOWN: Mudar", 1);
+            drawCenteredText(40, "SEL: Iniciar", 1);
+            drawCenteredText(54, "BACK: Voltar", 1);
         }
     } else {
-        // Jammer ativo
+        // Jammer ATIVO
         int ch = nrf24JammerLoop();
         uint32_t pkts = nrf24GetJamTotalPackets();
         const int8_t* jamData = nrf24GetJamHistory();
 
         if (nrf24JammerIsSelectMode()) {
-            // SELECT CH mode
-            if (jammerChannelListMode) {
-                // PRIMEIRO: Lista os canais para selecionar
-                char buf[32];
-                snprintf(buf, 32, "SEL CH: %d", nrf24JammerGetSelectedChannel());
-                drawCenteredText(10, buf, 1);
-                drawCenteredText(24, "UP/DOWN: Mudar", 1);
-                drawCenteredText(38, "SEL: Confirmar", 1);
-                drawCenteredText(52, "BACK: Voltar", 1);
-            } else {
-                // DEPOIS: Grafico em tempo real do canal selecionado
-                char buf[32];
-                snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
-                drawCenteredText(10, buf, 1);
+            // SELECT CH ativo: grafico do canal fixo
+            char buf[32];
+            snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
+            drawCenteredText(10, buf, 1);
 
-                // Grafico real de barras (mesma posicao do scanner)
-                drawRealSpectrum(0, 62, 8, 16, 40, jamData);
+            // Grafico real de barras
+            drawRealSpectrum(0, 62, 8, 16, 40, jamData);
 
-                drawCenteredText(56, "SEL: Parar", 1);
-            }
+            drawCenteredText(56, "SEL: Parar", 1);
         } else {
-            // KILL ALL mode: apenas grafico real + contador de pacotes
+            // KILL ALL ativo: grafico varrendo + contador
             char buf[32];
             snprintf(buf, 32, "Pkts: %lu", pkts);
-            drawCenteredText(12, buf, 1);  // Descido um pouquinho
+            drawCenteredText(12, buf, 1);
 
-            // Grafico real de barras (mesma posicao do scanner)
+            // Grafico real de barras
             drawRealSpectrum(0, 62, 8, 16, 40, jamData);
 
             drawCenteredText(56, "SEL: Parar", 1);
@@ -882,47 +881,50 @@ void handleNRF24AnalyzeDetail(ButtonState btn) {
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
     if (!nrf24IsJammerActive()) {
-        // Selecao de modo: UP/DOWN alterna entre KILL ALL e SELECT CH
-        if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
-            jammerSelectOption = !jammerSelectOption;
-            nrf24JammerSetSelectMode(jammerSelectOption);
-        }
-        // SELECT inicia o jammer no modo atual
-        if (btn == BTN_PRESSED_SELECT) {
-            nrf24StartJammer();
-        }
-    } else {
-        // Jammer rodando
-        nrf24JammerLoop();
-
-        if (nrf24JammerIsSelectMode() && jammerChannelListMode) {
-            // No modo SELECT CH, primeiro navega na lista de canais
+        if (!nrf24JammerIsSelectMode()) {
+            // Tela de selecao KILL ALL / SELECT CH
+            if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
+                jammerSelectOption = !jammerSelectOption;
+                nrf24JammerSetSelectMode(jammerSelectOption);
+            }
+            if (btn == BTN_PRESSED_SELECT) {
+                if (nrf24JammerIsSelectMode()) {
+                    // SELECT CH selecionado: entra no modo lista de canais
+                    // (render vai mostrar lista, jammer ainda NAO inicia)
+                } else {
+                    // KILL ALL: inicia jammer imediatamente
+                    nrf24StartJammer();
+                }
+            }
+        } else {
+            // Modo SELECT CH - lista de canais (jammer NAO ativo)
             if (btn == BTN_PRESSED_UP) {
                 int ch = nrf24JammerGetSelectedChannel();
-                nrf24JammerSetSelectedChannel(ch - 1);
+                if (ch > 0) nrf24JammerSetSelectedChannel(ch - 1);
             }
             if (btn == BTN_PRESSED_DOWN) {
                 int ch = nrf24JammerGetSelectedChannel();
-                nrf24JammerSetSelectedChannel(ch + 1);
+                if (ch < 125) nrf24JammerSetSelectedChannel(ch + 1);
             }
             if (btn == BTN_PRESSED_SELECT) {
-                // Confirma o canal e vai para o grafico
-                jammerChannelListMode = false;
+                // Inicia jammer no canal selecionado
+                nrf24StartJammer();
             }
             if (btn == BTN_PRESSED_BACK) {
-                nrf24StopJammer();
-                jammerChannelListMode = true;
+                // Volta para tela de selecao KILL ALL/SELECT CH
+                nrf24JammerSetSelectMode(false);
+                jammerSelectOption = false;
             }
-        } else {
-            // Grafico ativo ou KILL ALL - SELECT para
-            if (btn == BTN_PRESSED_SELECT) {
-                nrf24StopJammer();
-                jammerChannelListMode = true;
-            }
-            if (btn == BTN_PRESSED_BACK) {
-                nrf24StopJammer();
-                jammerChannelListMode = true;
-            }
+        }
+    } else {
+        // Jammer ATIVO - qualquer modo
+        nrf24JammerLoop();
+
+        // SELECT ou BACK para parar
+        if (btn == BTN_PRESSED_SELECT || btn == BTN_PRESSED_BACK) {
+            nrf24StopJammer();
+            jammerSelectOption = false;
+            nrf24JammerSetSelectMode(false);
         }
     }
 }
