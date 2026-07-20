@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // ============================================================
-// PINOS - Zeus (ORIGINAIS - NAO ALTERAR)
+// PINOS - Crazy Cat v3.1 (ORIGINAIS - NAO ALTERAR)
 // ============================================================
 
 // TELA OLED (I2C)
