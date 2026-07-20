@@ -30,7 +30,7 @@ void setup() {
     cc1101OK = cc1101Init();
     showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
 
-    WiFi.mode(WIFI_MODE_STA);
+    WiFi.mode(WIFI_STA);
     showLoading("WiFi OK", 80);
 
     showLoading("Pronto!", 100);
