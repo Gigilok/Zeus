@@ -275,7 +275,7 @@ void renderNRF24Jammer() {
         int ch = nrf24JammerLoop();
         uint32_t pkts = nrf24GetJamTotalPackets();
 
-        if (jamSelectMode) {
+        if (nrf24JammerIsSelectMode()) {
             // SELECT CH mode: grafico em tempo real do canal selecionado
             char buf[32];
             snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
