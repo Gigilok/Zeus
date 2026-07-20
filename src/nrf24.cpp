@@ -85,10 +85,10 @@ void nrf24StopJammer() {
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
-    if (millis() - jamLastSwitch >= 80) {
+    if (millis() - jamLastSwitch >= 15) {
         jamLastSwitch = millis();
         if (carrierActive) radio.stopConstCarrier();
-        jamChannel += 2;
+        jamChannel += 1;
         if (jamChannel > 125) jamChannel = 0;
         radio.setChannel(jamChannel);
         radio.startConstCarrier(RF24_PA_MAX, jamChannel);
