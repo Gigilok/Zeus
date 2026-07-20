@@ -34,9 +34,16 @@ extern void nrf24ScanLoop();
 extern bool nrf24IsScanning();
 extern const int8_t* nrf24GetScanHistory();
 extern int nrf24GetScanIndex();
+extern uint8_t nrf24GetDetectedCount();
+struct DetectedSignal { uint8_t channel; int8_t rssi; unsigned long firstSeen; unsigned long lastSeen; bool active; };
+extern DetectedSignal* nrf24GetDetected(uint8_t);
 extern uint8_t nrf24GetDeviceCount();
 extern bool nrf24IsJammerActive();
 extern int nrf24JammerLoop();
+extern bool nrf24JammerIsSelectMode();
+extern void nrf24JammerSetSelectMode(bool);
+extern int nrf24JammerGetSelectedChannel();
+extern void nrf24JammerSetSelectedChannel(int);
 
 extern bool cc1101IsAvailable();
 extern void cc1101StartCapture();
@@ -224,14 +231,33 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 // ============================================================
 void renderNRF24Jammer() {
     clearDisplay();
-    drawMenuHeader("NRF24");
-    if (nrf24IsJammerActive()) {
-        int ch = nrf24JammerLoop();
-        int pct = (ch * 100) / 125;
-        drawCenteredText(18, "JAM", 2);
-        drawProgressBar(14, 38, 100, 8, pct);
+    drawMenuHeader("JAM");
+
+    if (!nrf24IsJammerActive()) {
+        // Tela de selecao de modo
+        if (!nrf24JammerIsSelectMode()) {
+            drawCenteredText(20, "KILL ALL", 1);
+            drawCenteredText(40, "> SELECT CH", 1);
+        } else {
+            drawCenteredText(20, "> KILL ALL", 1);
+            drawCenteredText(40, "SELECT CH", 1);
+        }
+        char buf[16];
+        snprintf(buf, 16, "CH:%d", nrf24JammerGetSelectedChannel());
+        drawCenteredText(56, buf, 1);
     } else {
-        drawCenteredText(32, "JAM", 2);
+        // Jammer ativo
+        int ch = nrf24JammerLoop();
+        if (nrf24JammerIsSelectMode()) {
+            char buf[16];
+            snprintf(buf, 16, "KILL CH%d", ch);
+            drawCenteredText(28, buf, 1);
+            drawCenteredText(46, "JAM", 2);
+        } else {
+            int pct = (ch * 100) / 125;
+            drawCenteredText(18, "KILL ALL", 1);
+            drawProgressBar(14, 38, 100, 8, pct);
+        }
     }
     updateDisplay();
 }
@@ -684,10 +710,27 @@ void renderSettingsConnection() {
 // INPUT HANDLERS
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
-    if (btn == BTN_PRESSED_SELECT) {
-        if (!nrf24IsJammerActive()) {
+    if (!nrf24IsJammerActive()) {
+        // Selecao de modo
+        if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
+            nrf24JammerSetSelectMode(!nrf24JammerIsSelectMode());
+        }
+        if (btn == BTN_PRESSED_SELECT) {
             nrf24StartJammer();
-        } else {
+        }
+        // Ajustar canal no modo select
+        if (nrf24JammerIsSelectMode()) {
+            if (btn == BTN_PRESSED_UP) {
+                nrf24JammerSetSelectedChannel(nrf24JammerGetSelectedChannel() + 1);
+            }
+            if (btn == BTN_PRESSED_DOWN) {
+                nrf24JammerSetSelectedChannel(nrf24JammerGetSelectedChannel() - 1);
+            }
+        }
+    } else {
+        // Jammer rodando
+        nrf24JammerLoop();
+        if (btn == BTN_PRESSED_SELECT) {
             nrf24StopJammer();
         }
     }
@@ -697,10 +740,10 @@ void handleNRF24Scanner(ButtonState btn) {
     if (!nrf24IsScanning()) {
         nrf24StartScan();
     }
-    if (btn == BTN_PRESSED_SELECT) {
+    nrf24ScanLoop();
+    if (btn == BTN_PRESSED_BACK) {
         nrf24StopScan();
     }
-    nrf24ScanLoop();
 }
 
 void handleCC1101Copy(ButtonState btn) {
