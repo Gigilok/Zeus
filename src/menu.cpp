@@ -200,9 +200,6 @@ void renderMenu() {
     for (int i = 0; i < visibleItems && (startIndex + i) < (int)currentMenuItemCount; i++) {
         drawMenuItem(startY + i * 10, currentMenuItems[startIndex + i].label, (startIndex + i) == menuIndex);
     }
-    char status[16];
-    snprintf(status, 16, "%d/%d", menuIndex + 1, currentMenuItemCount);
-    drawStatusBar(status);
     updateDisplay();
 }
 
@@ -214,9 +211,6 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
     for (int i = 0; i < visibleItems && (startIndex + i) < count; i++) {
         drawItem(startIndex + i, 12 + i * 10, (startIndex + i) == listIndex);
     }
-    char status[16];
-    snprintf(status, 16, "%d/%d", listIndex + 1, count);
-    drawStatusBar(status);
     updateDisplay();
 }
 
