@@ -264,25 +264,44 @@ void renderNRF24Jammer() {
 
 void renderNRF24Scanner() {
     clearDisplay();
-    drawMenuHeader("NRF24 SCAN");
-    if (scanning) {
-        drawCenteredText(30, "Escaneando...", 1);
-        int pct = ((millis() - captureStartTime) * 100) / 5000;
-        if (pct > 100) pct = 100;
-        drawProgressBar(14, 45, 100, 8, pct);
-    } else {
-        if (nrf24GetDeviceCount() == 0) {
-            drawCenteredText(25, "Nenhum", 1);
-            drawCenteredText(38, "dispositivo", 1);
-        } else {
-            drawText(0, 14, "Encontrados:", 1);
-            for (int i = 0; i < (int)nrf24GetDeviceCount() && i < 4; i++) {
-                char buf[32];
-                snprintf(buf, 32, "CH:%d", nrf24GetDevice(i)->channel);
-                drawText(0, 24 + i * 10, buf, 1);
-            }
+    drawMenuHeader("SCAN");
+
+    if (nrf24IsScanning()) {
+        // ONDAS em tempo real (parte superior)
+        const int8_t* hist = nrf24GetScanHistory();
+        int idx = nrf24GetScanIndex();
+
+        for (int i = 0; i < NRF_SCAN_BARS; i++) {
+            int sampleIdx = (idx + i) % NRF_SCAN_HISTORY;
+            int8_t rssi = hist[sampleIdx];
+            int h = map(rssi, -100, -40, 1, 28);
+            if (h < 1) h = 1;
+            if (h > 28) h = 28;
+            int x = i * 8;
+            int y = 32 - h;
+            display.fillRect(x, y, 6, h, SSD1306_WHITE);
         }
-        drawCenteredText(55, "SEL: Scan", 1);
+        display.drawLine(0, 32, 127, 32, SSD1306_WHITE);
+
+        // Lista de sinais detectados (parte inferior)
+        uint8_t dcount = nrf24GetDetectedCount();
+        if (dcount > 0) {
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            for (int i = 0; i < dcount && i < 3; i++) {
+                DetectedSignal* sig = nrf24GetDetected(i);
+                if (sig && sig->active) {
+                    char buf[20];
+                    snprintf(buf, 20, "CH%3d:%d", sig->channel, sig->rssi);
+                    display.setCursor(0, 34 + i * 10);
+                    display.print(buf);
+                }
+            }
+        } else {
+            drawCenteredText(48, "Aguardando...", 1);
+        }
+    } else {
+        drawCenteredText(32, "SCAN", 2);
     }
     updateDisplay();
 }
