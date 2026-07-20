@@ -2,7 +2,9 @@
 #include <RF24.h>
 #include "config.h"
 
-RF24 nrf24(NRF_CE, NRF_CSN);
+// SPI para NRF24 (HSPI)
+SPIClass* hspi = nullptr;
+RF24* nrf24 = nullptr;
 
 struct NRFDevice {
     uint8_t address[5];
@@ -14,26 +16,42 @@ NRFDevice nrfDevices[20];
 uint8_t nrfDeviceCount = 0;
 
 bool nrf24Init() {
-    SPI.begin(NRF_SCK, NRF_MISO, NRF_MOSI, NRF_CSN);
-    if (!nrf24.begin()) {
+    // Inicializa HSPI com pinos específicos do NRF24
+    hspi = new SPIClass(HSPI);
+    hspi->begin(NRF_SCK, NRF_MISO, NRF_MOSI, NRF_CSN);
+
+    nrf24 = new RF24(hspi, NRF_CE, NRF_CSN);
+
+    if (!nrf24->begin()) {
+        delete nrf24;
+        nrf24 = nullptr;
+        delete hspi;
+        hspi = nullptr;
         return false;
     }
-    nrf24.setPALevel(RF24_PA_MAX);
-    nrf24.setDataRate(RF24_2MBPS);
-    nrf24.setAutoAck(false);
+
+    nrf24->setPALevel(RF24_PA_MAX);
+    nrf24->setDataRate(RF24_2MBPS);
+    nrf24->setAutoAck(false);
+    nrf24->disableCRC();
+
+    // Habilita dynamic payloads para scanner funcionar
+    nrf24->enableDynamicPayloads();
+
     return true;
 }
 
 void nrf24StartJammer() {
+    if (!nrf24) return;
     nrf24JammerActive = true;
-    nrf24.stopListening();
+    nrf24->stopListening();
     uint8_t noise[32];
     for (int i = 0; i < 32; i++) noise[i] = random(256);
 
     while (nrf24JammerActive) {
         for (int ch = 0; ch < 125; ch++) {
-            nrf24.setChannel(ch);
-            nrf24.write(noise, 32);
+            nrf24->setChannel(ch);
+            nrf24->write(noise, 32);
             for (int i = 0; i < 32; i++) noise[i] = random(256);
         }
         yield();
@@ -45,25 +63,26 @@ void nrf24StopJammer() {
 }
 
 void nrf24Scan() {
+    if (!nrf24) return;
     nrfDeviceCount = 0;
     uint8_t buffer[32];
 
     for (int ch = 0; ch < 125 && nrfDeviceCount < 20; ch++) {
-        nrf24.setChannel(ch);
-        nrf24.startListening();
+        nrf24->setChannel(ch);
+        nrf24->startListening();
         delay(50);
 
-        if (nrf24.available()) {
-            uint8_t len = nrf24.getDynamicPayloadSize();
+        if (nrf24->available()) {
+            uint8_t len = nrf24->getDynamicPayloadSize();
             if (len > 0 && len <= 32) {
-                nrf24.read(buffer, len);
+                nrf24->read(buffer, len);
                 nrfDevices[nrfDeviceCount].channel = ch;
-                nrfDevices[nrfDeviceCount].rssi = -40;
+                nrfDevices[nrfDeviceCount].rssi = -40;  // RF24 não tem RSSI nativo
                 memcpy(nrfDevices[nrfDeviceCount].address, buffer, 5);
                 nrfDeviceCount++;
             }
         }
-        nrf24.stopListening();
+        nrf24->stopListening();
     }
 }
 
@@ -81,5 +100,6 @@ bool nrf24IsJammerActive() {
 }
 
 bool nrf24IsAvailable() {
-    return nrf24.isChipConnected();
+    if (!nrf24) return false;
+    return nrf24->isChipConnected();
 }
