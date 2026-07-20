@@ -35,6 +35,7 @@ extern bool nrf24IsScanning();
 extern const int8_t* nrf24GetScanHistory();
 extern int nrf24GetScanIndex();
 extern uint32_t nrf24GetScanTotalPackets();
+extern const int8_t* nrf24GetScanBarData();
 extern void nrf24StartAnalyze();
 extern bool nrf24IsAnalyzing();
 extern uint8_t nrf24GetDetectedCount();
@@ -48,6 +49,7 @@ extern SignalData* nrf24GetSavedSignal(uint8_t);
 extern uint8_t nrf24GetDeviceCount();
 extern bool nrf24IsJammerActive();
 extern int nrf24JammerLoop();
+extern const int8_t* nrf24GetJamHistory();
 extern uint32_t nrf24GetJamTotalPackets();
 extern uint32_t nrf24GetJamChannelPackets();
 extern bool nrf24JammerIsSelectMode();
@@ -156,6 +158,9 @@ unsigned long captureStartTime = 0;
 // Jammer select mode - estado de navegacao
 static bool jammerSelectOption = false; // false = KILL ALL, true = SELECT CH
 
+// Jammer SELECT CH - estados
+static bool jammerChannelListMode = true; // true = lista canais, false = grafico ativo
+
 // ============================================================
 // MENU NAVIGATION
 // ============================================================
@@ -211,6 +216,7 @@ void goBack() {
     if (bfRunning) stopBruteForce();
     if (capturing) { cc1101StopCapture(); capturing = false; }
     if (inListView) inListView = false;
+    jammerChannelListMode = true;
 }
 
 // ============================================================
@@ -243,18 +249,20 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 // SCREEN RENDERERS
 // ============================================================
 
-// Desenha grafico de barras estilo espectro
-void drawSpectrumBars(int startX, int startY, int barWidth, int barCount, int maxHeight, const int8_t* data, int dataIndex, int dataSize) {
+// Desenha grafico de barras real baseado em dados do RF24
+void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int maxHeight, const int8_t* data) {
     for (int i = 0; i < barCount; i++) {
-        int sampleIdx = (dataIndex + i) % dataSize;
-        int8_t rssi = data[sampleIdx];
-        int h = map(rssi, -100, -50, 2, maxHeight);
+        int8_t val = data[i];
+        // Mapeia valor para altura (0 a maxHeight)
+        int h = map(val, 0, 45, 2, maxHeight);
         if (h < 2) h = 2;
         if (h > maxHeight) h = maxHeight;
         int x = startX + i * barWidth;
-        int y = startY + maxHeight - h;
+        int y = startY - h;
         getDisplay().fillRect(x, y, barWidth - 1, h, SSD1306_WHITE);
     }
+    // Linha base
+    getDisplay().drawLine(startX, startY, startX + barCount * barWidth, startY, SSD1306_WHITE);
 }
 
 void renderNRF24Jammer() {
@@ -274,41 +282,37 @@ void renderNRF24Jammer() {
         // Jammer ativo
         int ch = nrf24JammerLoop();
         uint32_t pkts = nrf24GetJamTotalPackets();
+        const int8_t* jamData = nrf24GetJamHistory();
 
         if (nrf24JammerIsSelectMode()) {
-            // SELECT CH mode: grafico em tempo real do canal selecionado
-            char buf[32];
-            snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
-            drawCenteredText(10, buf, 1);
+            // SELECT CH mode
+            if (jammerChannelListMode) {
+                // PRIMEIRO: Lista os canais para selecionar
+                char buf[32];
+                snprintf(buf, 32, "SEL CH: %d", nrf24JammerGetSelectedChannel());
+                drawCenteredText(10, buf, 1);
+                drawCenteredText(24, "UP/DOWN: Mudar", 1);
+                drawCenteredText(38, "SEL: Confirmar", 1);
+                drawCenteredText(52, "BACK: Voltar", 1);
+            } else {
+                // DEPOIS: Grafico em tempo real do canal selecionado
+                char buf[32];
+                snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
+                drawCenteredText(10, buf, 1);
 
-            // Linha base do grafico
-            getDisplay().drawLine(0, 62, 127, 62, SSD1306_WHITE);
+                // Grafico real de barras (mesma posicao do scanner)
+                drawRealSpectrum(0, 62, 8, 16, 40, jamData);
 
-            // Barras animadas mostrando atividade do jammer no canal
-            for (int i = 0; i < 16; i++) {
-                int h = random(5, 35);
-                int x = i * 8;
-                int y = 62 - h;
-                getDisplay().fillRect(x, y, 6, h, SSD1306_WHITE);
+                drawCenteredText(56, "SEL: Parar", 1);
             }
-
-            drawCenteredText(56, "SEL: Parar", 1);
         } else {
-            // KILL ALL mode: apenas grafico + contador de pacotes
+            // KILL ALL mode: apenas grafico real + contador de pacotes
             char buf[32];
             snprintf(buf, 32, "Pkts: %lu", pkts);
-            drawCenteredText(8, buf, 1);
+            drawCenteredText(12, buf, 1);  // Descido um pouquinho
 
-            // Linha base do grafico
-            getDisplay().drawLine(0, 62, 127, 62, SSD1306_WHITE);
-
-            // Barras animadas
-            for (int i = 0; i < 16; i++) {
-                int h = random(5, 40);
-                int x = i * 8;
-                int y = 62 - h;
-                getDisplay().fillRect(x, y, 6, h, SSD1306_WHITE);
-            }
+            // Grafico real de barras (mesma posicao do scanner)
+            drawRealSpectrum(0, 62, 8, 16, 40, jamData);
 
             drawCenteredText(56, "SEL: Parar", 1);
         }
@@ -329,33 +333,22 @@ void renderNRF24Scanner() {
         getDisplay().setCursor(90, 2);
         getDisplay().print(pktBuf);
 
-        // ONDAS em tempo real (parte superior - descido um pouco, comeca em y=14)
-        const int8_t* hist = nrf24GetScanHistory();
-        int idx = nrf24GetScanIndex();
+        // Grafico REAL de barras na mesma posicao do jammer (y=62 base)
+        const int8_t* barData = nrf24GetScanBarData();
+        drawRealSpectrum(0, 62, 8, 16, 40, barData);
 
-        for (int i = 0; i < NRF_SCAN_BARS; i++) {
-            int sampleIdx = (idx + i) % NRF_SCAN_HISTORY;
-            int8_t rssi = hist[sampleIdx];
-            int h = map(rssi, -100, -50, 1, 24);
-            if (h < 1) h = 1;
-            if (h > 24) h = 24;
-            int x = i * 8;
-            int y = 38 - h;  // Descido para y=38 (antes era 30)
-            getDisplay().fillRect(x, y, 6, h, SSD1306_WHITE);
-        }
-        getDisplay().drawLine(0, 38, 127, 38, SSD1306_WHITE);  // Linha base ajustada
-
-        // Lista de sinais detectados (parte inferior)
+        // Lista de sinais detectados (parte inferior, abaixo do grafico nao cabe mais)
+        // Vamos mostrar no canto esquerdo acima do grafico
         uint8_t dcount = nrf24GetDetectedCount();
         if (dcount > 0) {
             getDisplay().setTextSize(1);
             getDisplay().setTextColor(SSD1306_WHITE);
-            int y = 42;  // Descido para nao sobrepor
-            for (int i = 0; i < dcount && i < 2 && y < 64; i++) {
+            int y = 14;
+            for (int i = 0; i < dcount && i < 2 && y < 22; i++) {
                 DetectedSignal* sig = nrf24GetDetected(i);
                 if (sig && sig->active) {
                     char buf[20];
-                    snprintf(buf, 20, "CH%3d:%d", sig->channel, sig->rssi);
+                    snprintf(buf, 20, "CH%d:%d", sig->channel, sig->rssi);
                     getDisplay().setCursor(0, y);
                     getDisplay().print(buf);
                     y += 10;
@@ -802,6 +795,7 @@ void renderNRF24Analyze() {
         if (dcount == 0) {
             drawCenteredText(28, "Nenhum sinal", 1);
             drawCenteredText(42, "detectado", 1);
+            drawCenteredText(56, "SEL: Re-escanear", 1);
         } else {
             uint8_t sel = nrf24GetAnalyzeSelected();
             for (int i = 0; i < dcount && i < 5; i++) {
@@ -856,9 +850,14 @@ void handleNRF24Analyze(ButtonState btn) {
         uint8_t sel = nrf24GetAnalyzeSelected();
         if (sel < dcount - 1) nrf24SetAnalyzeSelected(sel + 1);
     }
-    if (btn == BTN_PRESSED_SELECT && dcount > 0) {
-        previousMenu = currentMenu;
-        currentMenu = MENU_NRF24_ANALYZE_DETAIL;
+    if (btn == BTN_PRESSED_SELECT) {
+        if (dcount == 0) {
+            // Re-escanear se nenhum sinal encontrado
+            analyzed = false;
+        } else {
+            previousMenu = currentMenu;
+            currentMenu = MENU_NRF24_ANALYZE_DETAIL;
+        }
     }
     if (btn == BTN_PRESSED_BACK) {
         analyzed = false;
@@ -893,10 +892,37 @@ void handleNRF24Jammer(ButtonState btn) {
             nrf24StartJammer();
         }
     } else {
-        // Jammer rodando - SELECT para
+        // Jammer rodando
         nrf24JammerLoop();
-        if (btn == BTN_PRESSED_SELECT) {
-            nrf24StopJammer();
+
+        if (nrf24JammerIsSelectMode() && jammerChannelListMode) {
+            // No modo SELECT CH, primeiro navega na lista de canais
+            if (btn == BTN_PRESSED_UP) {
+                int ch = nrf24JammerGetSelectedChannel();
+                nrf24JammerSetSelectedChannel(ch - 1);
+            }
+            if (btn == BTN_PRESSED_DOWN) {
+                int ch = nrf24JammerGetSelectedChannel();
+                nrf24JammerSetSelectedChannel(ch + 1);
+            }
+            if (btn == BTN_PRESSED_SELECT) {
+                // Confirma o canal e vai para o grafico
+                jammerChannelListMode = false;
+            }
+            if (btn == BTN_PRESSED_BACK) {
+                nrf24StopJammer();
+                jammerChannelListMode = true;
+            }
+        } else {
+            // Grafico ativo ou KILL ALL - SELECT para
+            if (btn == BTN_PRESSED_SELECT) {
+                nrf24StopJammer();
+                jammerChannelListMode = true;
+            }
+            if (btn == BTN_PRESSED_BACK) {
+                nrf24StopJammer();
+                jammerChannelListMode = true;
+            }
         }
     }
 }
