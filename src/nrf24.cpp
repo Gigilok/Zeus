@@ -2,8 +2,7 @@
 #include <RF24.h>
 #include "config.h"
 
-// SPI para NRF24 (HSPI)
-SPIClass* hspi = nullptr;
+// NRF24 usa HSPI compartilhado - NAO chama SPI.begin() aqui!
 RF24* nrf24 = nullptr;
 
 struct NRFDevice {
@@ -16,17 +15,12 @@ NRFDevice nrfDevices[20];
 uint8_t nrfDeviceCount = 0;
 
 bool nrf24Init() {
-    // Inicializa HSPI com pinos específicos do NRF24
-    hspi = new SPIClass(HSPI);
-    hspi->begin(NRF_SCK, NRF_MISO, NRF_MOSI, NRF_CSN);
-
-    nrf24 = new RF24(hspi, NRF_CE, NRF_CSN);
+    // NRF24 usa HSPI (pinos 18,19,23) - SPI ja inicializado pelo CC1101
+    nrf24 = new RF24(NRF_CE, NRF_CSN);
 
     if (!nrf24->begin()) {
         delete nrf24;
         nrf24 = nullptr;
-        delete hspi;
-        hspi = nullptr;
         return false;
     }
 
@@ -34,8 +28,6 @@ bool nrf24Init() {
     nrf24->setDataRate(RF24_2MBPS);
     nrf24->setAutoAck(false);
     nrf24->disableCRC();
-
-    // Habilita dynamic payloads para scanner funcionar
     nrf24->enableDynamicPayloads();
 
     return true;
@@ -77,7 +69,7 @@ void nrf24Scan() {
             if (len > 0 && len <= 32) {
                 nrf24->read(buffer, len);
                 nrfDevices[nrfDeviceCount].channel = ch;
-                nrfDevices[nrfDeviceCount].rssi = -40;  // RF24 não tem RSSI nativo
+                nrfDevices[nrfDeviceCount].rssi = -40;
                 memcpy(nrfDevices[nrfDeviceCount].address, buffer, 5);
                 nrfDeviceCount++;
             }
