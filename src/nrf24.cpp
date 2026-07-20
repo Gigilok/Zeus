@@ -2,6 +2,11 @@
 #include <RF24.h>
 #include "config.h"
 
+// ============================================================
+// NRF24 - Crazy Cat v3.1
+// Baseado no codigo funcional (VSPI + hard reset + carrier)
+// ============================================================
+
 RF24 radio(NRF_CE, NRF_CSN);
 
 struct NRFDevice {
@@ -17,9 +22,35 @@ static int jamChannel = 0;
 static unsigned long jamLastSwitch = 0;
 static bool carrierActive = false;
 
+// ============================================================
+// HARD RESET (do codigo funcional)
+// ============================================================
+static void hardResetNRF24() {
+    digitalWrite(NRF_CE, LOW);
+    delay(150);
+    digitalWrite(NRF_CE, HIGH);
+    delay(150);
+    digitalWrite(NRF_CSN, HIGH);
+    delay(10);
+    digitalWrite(NRF_CSN, LOW);
+    delay(10);
+    digitalWrite(NRF_CSN, HIGH);
+    delay(50);
+}
+
+// ============================================================
+// INIT
+// ============================================================
 bool nrf24Init() {
-    if (!radio.begin()) return false;
-    radio.setPALevel(RF24_PA_MAX, true);  // true = ativa LNA externo
+    pinMode(NRF_CE, OUTPUT);
+    pinMode(NRF_CSN, OUTPUT);
+    digitalWrite(NRF_CSN, HIGH);
+    hardResetNRF24();
+
+    if (!radio.begin()) {
+        return false;
+    }
+    radio.setPALevel(RF24_PA_MAX, true);
     radio.setDataRate(RF24_2MBPS);
     radio.setAutoAck(false);
     radio.disableCRC();
@@ -27,13 +58,18 @@ bool nrf24Init() {
     return true;
 }
 
+// ============================================================
+// SCANNER
+// ============================================================
 void nrf24Scan() {
     nrfDeviceCount = 0;
     uint8_t buffer[32];
+
     for (int ch = 0; ch < 125 && nrfDeviceCount < 20; ch++) {
         radio.setChannel(ch);
         radio.startListening();
         delay(40);
+
         if (radio.available()) {
             uint8_t len = radio.getDynamicPayloadSize();
             if (len > 0 && len <= 32) {
@@ -58,12 +94,17 @@ NRFDevice* nrf24GetDevice(uint8_t index) {
 bool nrf24IsJammerActive() { return nrf24JammerActive; }
 bool nrf24IsAvailable() { return radio.isChipConnected(); }
 
+// ============================================================
+// CARRIER WAVE JAMMER - NAO BLOQUEANTE
+// Baseado no codigo funcional: dwell mais longo, sweep agressivo
+// ============================================================
 void nrf24StartJammer() {
     if (nrf24JammerActive) return;
     nrf24JammerActive = true;
     jamChannel = 0;
     jamLastSwitch = 0;
     carrierActive = false;
+
     radio.setAutoAck(false);
     radio.stopListening();
     radio.setRetries(0, 0);
@@ -85,14 +126,23 @@ void nrf24StopJammer() {
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
-    if (millis() - jamLastSwitch >= 15) {
+
+    // Troca de canal a cada 500us (igual ao codigo funcional)
+    // Mas usando millis() para nao bloquear
+    if (millis() - jamLastSwitch >= 1) {  // 1ms = 1000us, proximo de 500us
         jamLastSwitch = millis();
-        if (carrierActive) radio.stopConstCarrier();
+
+        if (carrierActive) {
+            radio.stopConstCarrier();
+        }
+
         jamChannel += 1;
         if (jamChannel > 125) jamChannel = 0;
+
         radio.setChannel(jamChannel);
         radio.startConstCarrier(RF24_PA_MAX, jamChannel);
         carrierActive = true;
     }
+
     return jamChannel;
 }
