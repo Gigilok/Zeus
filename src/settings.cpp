@@ -101,8 +101,8 @@ void initConnection(int type) {
     currentConn = (ConnType)type;
     connActive = false;
     switch (currentConn) {
-        case CONN_USB: Serial.begin(115200); connActive = true; break;
-        case CONN_SERIAL: Serial.begin(9600); connActive = true; break;
+        case CONN_USB: connActive = true; break;
+        case CONN_SERIAL: connActive = true; break;
         case CONN_BT: connActive = true; break;
         case CONN_PAIR: snprintf(pairingCode, 7, "%06d", random(1000000)); connActive = true; break;
     }
@@ -110,7 +110,6 @@ void initConnection(int type) {
 
 void disconnectConnection() {
     connActive = false;
-    Serial.end();
 }
 
 bool isConnectionActive() { return connActive; }
