@@ -30,6 +30,7 @@ extern void nrf24StopJammer();
 extern void nrf24Scan();
 extern uint8_t nrf24GetDeviceCount();
 extern bool nrf24IsJammerActive();
+extern int nrf24JammerLoop();
 
 extern bool cc1101IsAvailable();
 extern void cc1101StartCapture();
@@ -126,7 +127,6 @@ const char* currentMenuTitle = "";
 int8_t listIndex = 0;
 int8_t listMaxIndex = 0;
 bool inListView = false;
-bool jammerRunning = false;
 bool scanning = false;
 bool capturing = false;
 unsigned long captureStartTime = 0;
@@ -176,7 +176,8 @@ void goBack() {
             enterMenu(MENU_SETTINGS); break;
         default: enterMenu(MENU_MAIN); break;
     }
-    if (jammerRunning) { nrf24StopJammer(); jammerRunning = false; }
+    if (nrf24JammerActive) { nrf24StopJammer(); }
+    if (nrf24JammerActive) nrf24StopJammer();
     if (deauthActive) stopDeauth();
     if (cameraFreezeActive) stopCameraFreeze();
     if (droneJammerActive) stopDroneJammer();
@@ -224,9 +225,12 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 void renderNRF24Jammer() {
     clearDisplay();
     drawMenuHeader("NRF24 JAMMER");
-    if (jammerRunning) {
-        drawCenteredText(25, "INTERFERENCIA", 1);
-        drawCenteredText(40, "ATIVA", 2);
+    if (nrf24IsJammerActive()) {
+        char buf[32];
+        snprintf(buf, 32, "CH: %d/125", nrf24JammerLoop());
+        drawCenteredText(20, "INTERFERENCIA", 1);
+        drawCenteredText(32, buf, 1);
+        drawCenteredText(46, "ATIVA", 2);
         drawCenteredText(58, "SEL: Parar", 1);
     } else {
         drawCenteredText(25, "Pronto", 1);
@@ -690,8 +694,11 @@ void renderSettingsConnection() {
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
     if (btn == BTN_PRESSED_SELECT) {
-        if (!jammerRunning) { jammerRunning = true; nrf24StartJammer(); }
-        else { jammerRunning = false; nrf24StopJammer(); }
+        if (!nrf24IsJammerActive()) {
+            nrf24StartJammer();
+        } else {
+            nrf24StopJammer();
+        }
     }
 }
 
