@@ -34,9 +34,15 @@ extern void nrf24ScanLoop();
 extern bool nrf24IsScanning();
 extern const int8_t* nrf24GetScanHistory();
 extern int nrf24GetScanIndex();
+extern void nrf24StartAnalyze();
 extern uint8_t nrf24GetDetectedCount();
-struct DetectedSignal { uint8_t channel; int8_t rssi; unsigned long firstSeen; unsigned long lastSeen; bool active; };
+struct DetectedSignal { uint8_t channel; int8_t rssi; unsigned long lastSeen; bool active; };
 extern DetectedSignal* nrf24GetDetected(uint8_t);
+extern uint8_t nrf24GetAnalyzeSelected();
+extern void nrf24SetAnalyzeSelected(uint8_t);
+extern bool nrf24SaveSignal(uint8_t);
+extern uint8_t nrf24GetSavedCount();
+extern SignalData* nrf24GetSavedSignal(uint8_t);
 extern uint8_t nrf24GetDeviceCount();
 extern bool nrf24IsJammerActive();
 extern int nrf24JammerLoop();
@@ -118,7 +124,7 @@ MenuItem mainMenu[] = {
 };
 const uint8_t mainMenuCount = 5;
 
-MenuItem nrf24Menu[] = {{"Jammer", MENU_NRF24_JAMMER}, {"Scanner", MENU_NRF24_SCANNER}};
+MenuItem nrf24Menu[] = {{"Jammer", MENU_NRF24_JAMMER}, {"Scanner", MENU_NRF24_SCANNER}, {"Analisar", MENU_NRF24_ANALYZE}};
 MenuItem cc1101Menu[] = {{"Copiar", MENU_CC1101_COPY}, {"Reproduzir", MENU_CC1101_REPLAY}};
 MenuItem attacksMenu[] = {
     {"Drone", MENU_ATTACK_DRONE}, {"Deauth", MENU_ATTACK_DEAUTH},
@@ -160,7 +166,7 @@ void enterMenu(MenuState state) {
     currentMenu = state;
     switch (state) {
         case MENU_MAIN: setMenu(mainMenu, mainMenuCount, "MENU"); break;
-        case MENU_NRF24: setMenu(nrf24Menu, 2, "NRF24"); break;
+        case MENU_NRF24: setMenu(nrf24Menu, 3, "NRF24"); break;
         case MENU_CC1101: setMenu(cc1101Menu, 2, "CC1101"); break;
         case MENU_ATTACKS: setMenu(attacksMenu, 5, "ATAQUES"); break;
         case MENU_ATTACK_DRONE: setMenu(droneMenu, 3, "DRONE"); break;
@@ -176,7 +182,7 @@ void goBack() {
     switch (currentMenu) {
         case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS: case MENU_NETWORKS: case MENU_SETTINGS:
             enterMenu(MENU_MAIN); break;
-        case MENU_NRF24_JAMMER: case MENU_NRF24_SCANNER: enterMenu(MENU_NRF24); break;
+        case MENU_NRF24_JAMMER: case MENU_NRF24_SCANNER: case MENU_NRF24_ANALYZE: case MENU_NRF24_ANALYZE_DETAIL: enterMenu(MENU_NRF24); break;
         case MENU_CC1101_COPY: case MENU_CC1101_REPLAY: enterMenu(MENU_CC1101); break;
         case MENU_ATTACK_DRONE: case MENU_ATTACK_DEAUTH: case MENU_ATTACK_CAMERA: case MENU_ATTACK_BLUETOOTH: case MENU_ATTACK_BRUTEFORCE:
             enterMenu(MENU_ATTACKS); break;
@@ -239,24 +245,56 @@ void renderNRF24Jammer() {
             drawCenteredText(20, "KILL ALL", 1);
             drawCenteredText(40, "> SELECT CH", 1);
         } else {
-            drawCenteredText(20, "> KILL ALL", 1);
-            drawCenteredText(40, "SELECT CH", 1);
+            // Modo SELECT CH - mostra lista de canais detectados
+            drawCenteredText(12, "SELECT CH", 1);
+            uint8_t dcount = nrf24GetDetectedCount();
+            if (dcount > 0) {
+                getDisplay().setTextSize(1);
+                getDisplay().setTextColor(SSD1306_WHITE);
+                int y = 24;
+                for (int i = 0; i < dcount && i < 4 && y < 56; i++) {
+                    DetectedSignal* sig = nrf24GetDetected(i);
+                    if (sig && sig->active) {
+                        char buf[20];
+                        int sel = nrf24JammerGetSelectedChannel();
+                        if (sig->channel == sel) {
+                            snprintf(buf, 20, ">CH%3d:%d", sig->channel, sig->rssi);
+                        } else {
+                            snprintf(buf, 20, " CH%3d:%d", sig->channel, sig->rssi);
+                        }
+                        getDisplay().setCursor(0, y);
+                        getDisplay().print(buf);
+                        y += 10;
+                    }
+                }
+            } else {
+                drawCenteredText(36, "Scan primeiro!", 1);
+            }
+            char buf[16];
+            snprintf(buf, 16, "CH:%d", nrf24JammerGetSelectedChannel());
+            drawCenteredText(56, buf, 1);
         }
-        char buf[16];
-        snprintf(buf, 16, "CH:%d", nrf24JammerGetSelectedChannel());
-        drawCenteredText(56, buf, 1);
     } else {
-        // Jammer ativo
+        // Jammer ativo - mostra grafico igual ao scanner
         int ch = nrf24JammerLoop();
         if (nrf24JammerIsSelectMode()) {
             char buf[16];
             snprintf(buf, 16, "KILL CH%d", ch);
-            drawCenteredText(28, buf, 1);
-            drawCenteredText(46, "JAM", 2);
+            drawCenteredText(12, buf, 1);
+            // Barra de intensidade simulada
+            int h = random(10, 28);
+            getDisplay().fillRect(50, 30 - h, 28, h, SSD1306_WHITE);
+            getDisplay().drawLine(0, 30, 127, 30, SSD1306_WHITE);
+            drawCenteredText(48, "JAM", 2);
         } else {
             int pct = (ch * 100) / 125;
-            drawCenteredText(18, "KILL ALL", 1);
-            drawProgressBar(14, 38, 100, 8, pct);
+            drawCenteredText(12, "KILL ALL", 1);
+            drawProgressBar(14, 28, 100, 8, pct);
+            // Ondas simuladas
+            for (int i = 0; i < 16; i++) {
+                int h = random(2, 20);
+                getDisplay().fillRect(i * 8, 50 - h, 6, h, SSD1306_WHITE);
+            }
         }
     }
     updateDisplay();
@@ -267,38 +305,38 @@ void renderNRF24Scanner() {
     drawMenuHeader("SCAN");
 
     if (nrf24IsScanning()) {
-        // ONDAS em tempo real (parte superior)
+        // ONDAS em tempo real (parte superior - 32px)
         const int8_t* hist = nrf24GetScanHistory();
         int idx = nrf24GetScanIndex();
 
         for (int i = 0; i < NRF_SCAN_BARS; i++) {
             int sampleIdx = (idx + i) % NRF_SCAN_HISTORY;
             int8_t rssi = hist[sampleIdx];
-            int h = map(rssi, -100, -40, 1, 28);
+            int h = map(rssi, -100, -50, 1, 28);
             if (h < 1) h = 1;
             if (h > 28) h = 28;
             int x = i * 8;
-            int y = 32 - h;
+            int y = 30 - h;
             getDisplay().fillRect(x, y, 6, h, SSD1306_WHITE);
         }
-        getDisplay().drawLine(0, 32, 127, 32, SSD1306_WHITE);
+        getDisplay().drawLine(0, 30, 127, 30, SSD1306_WHITE);
 
         // Lista de sinais detectados (parte inferior)
         uint8_t dcount = nrf24GetDetectedCount();
         if (dcount > 0) {
             getDisplay().setTextSize(1);
             getDisplay().setTextColor(SSD1306_WHITE);
-            for (int i = 0; i < dcount && i < 3; i++) {
+            int y = 34;
+            for (int i = 0; i < dcount && i < 3 && y < 64; i++) {
                 DetectedSignal* sig = nrf24GetDetected(i);
                 if (sig && sig->active) {
                     char buf[20];
                     snprintf(buf, 20, "CH%3d:%d", sig->channel, sig->rssi);
-                    getDisplay().setCursor(0, 34 + i * 10);
+                    getDisplay().setCursor(0, y);
                     getDisplay().print(buf);
+                    y += 10;
                 }
             }
-        } else {
-            drawCenteredText(48, "Aguardando...", 1);
         }
     } else {
         drawCenteredText(32, "SCAN", 2);
@@ -725,25 +763,121 @@ void renderSettingsConnection() {
     updateDisplay();
 }
 
+
+// ============================================================
+// NRF24 ANALYZER
+// ============================================================
+void renderNRF24Analyze() {
+    clearDisplay();
+    drawMenuHeader("ANALISAR");
+    uint8_t dcount = nrf24GetDetectedCount();
+    if (dcount == 0) {
+        drawCenteredText(28, "Nenhum", 1);
+        drawCenteredText(40, "sinal", 1);
+    } else {
+        uint8_t sel = nrf24GetAnalyzeSelected();
+        for (int i = 0; i < dcount && i < 5; i++) {
+            DetectedSignal* sig = nrf24GetDetected(i);
+            if (sig && sig->active) {
+                char buf[20];
+                if (i == sel) {
+                    snprintf(buf, 20, ">CH%3d:%d", sig->channel, sig->rssi);
+                } else {
+                    snprintf(buf, 20, " CH%3d:%d", sig->channel, sig->rssi);
+                }
+                drawText(0, 12 + i * 10, buf, 1);
+            }
+        }
+    }
+    updateDisplay();
+}
+
+void renderNRF24AnalyzeDetail() {
+    clearDisplay();
+    drawMenuHeader("INFO");
+    uint8_t sel = nrf24GetAnalyzeSelected();
+    DetectedSignal* sig = nrf24GetDetected(sel);
+    if (sig && sig->active) {
+        char buf[32];
+        snprintf(buf, 32, "Canal: %d", sig->channel);
+        drawText(0, 14, buf, 1);
+        snprintf(buf, 32, "RSSI: %d dBm", sig->rssi);
+        drawText(0, 26, buf, 1);
+        snprintf(buf, 32, "Freq: %lu MHz", 2400UL + sig->channel);
+        drawText(0, 38, buf, 1);
+        drawCenteredText(56, "SEL: Gravar", 1);
+    } else {
+        drawCenteredText(32, "Sinal perdido", 1);
+    }
+    updateDisplay();
+}
+
+void handleNRF24Analyze(ButtonState btn) {
+    uint8_t dcount = nrf24GetDetectedCount();
+    if (btn == BTN_PRESSED_UP) {
+        uint8_t sel = nrf24GetAnalyzeSelected();
+        if (sel > 0) nrf24SetAnalyzeSelected(sel - 1);
+    }
+    if (btn == BTN_PRESSED_DOWN) {
+        uint8_t sel = nrf24GetAnalyzeSelected();
+        if (sel < dcount - 1) nrf24SetAnalyzeSelected(sel + 1);
+    }
+    if (btn == BTN_PRESSED_SELECT && dcount > 0) {
+        previousMenu = currentMenu;
+        currentMenu = MENU_NRF24_ANALYZE_DETAIL;
+    }
+}
+
+void handleNRF24AnalyzeDetail(ButtonState btn) {
+    if (btn == BTN_PRESSED_SELECT) {
+        uint8_t sel = nrf24GetAnalyzeSelected();
+        if (nrf24SaveSignal(sel)) {
+            showMessage("OK", "Sinal gravado!");
+            delay(800);
+        } else {
+            showMessage("ERRO", "Falha ao gravar");
+            delay(800);
+        }
+    }
+}
+
 // ============================================================
 // INPUT HANDLERS
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
     if (!nrf24IsJammerActive()) {
         // Selecao de modo
+        if (btn == BTN_PRESSED_SELECT) {
+            nrf24StartJammer();
+            return;
+        }
         if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
             nrf24JammerSetSelectMode(!nrf24JammerIsSelectMode());
         }
-        if (btn == BTN_PRESSED_SELECT) {
-            nrf24StartJammer();
-        }
-        // Ajustar canal no modo select
+        // No modo select, UP/DOWN navega pelos canais detectados
         if (nrf24JammerIsSelectMode()) {
-            if (btn == BTN_PRESSED_UP) {
-                nrf24JammerSetSelectedChannel(nrf24JammerGetSelectedChannel() + 1);
+            uint8_t dcount = nrf24GetDetectedCount();
+            if (dcount > 0 && btn == BTN_PRESSED_UP) {
+                int current = nrf24JammerGetSelectedChannel();
+                int next = 125;
+                for (int i = 0; i < dcount; i++) {
+                    DetectedSignal* sig = nrf24GetDetected(i);
+                    if (sig && sig->active && sig->channel > current && sig->channel < next) {
+                        next = sig->channel;
+                    }
+                }
+                if (next < 125) nrf24JammerSetSelectedChannel(next);
             }
-            if (btn == BTN_PRESSED_DOWN) {
-                nrf24JammerSetSelectedChannel(nrf24JammerGetSelectedChannel() - 1);
+            if (dcount > 0 && btn == BTN_PRESSED_DOWN) {
+                int current = nrf24JammerGetSelectedChannel();
+                int prev = -1;
+                for (int i = 0; i < dcount; i++) {
+                    DetectedSignal* sig = nrf24GetDetected(i);
+                    if (sig && sig->active && sig->channel < current && sig->channel > prev) {
+                        prev = sig->channel;
+                    }
+                }
+                if (prev >= 0) nrf24JammerSetSelectedChannel(prev);
             }
         }
     } else {
@@ -762,6 +896,7 @@ void handleNRF24Scanner(ButtonState btn) {
     nrf24ScanLoop();
     if (btn == BTN_PRESSED_BACK) {
         nrf24StopScan();
+        goBack();
     }
 }
 
@@ -923,6 +1058,8 @@ void menuLoop() {
             renderMenu(); break;
         case MENU_NRF24_JAMMER: renderNRF24Jammer(); break;
         case MENU_NRF24_SCANNER: renderNRF24Scanner(); break;
+        case MENU_NRF24_ANALYZE: renderNRF24Analyze(); break;
+        case MENU_NRF24_ANALYZE_DETAIL: renderNRF24AnalyzeDetail(); break;
         case MENU_CC1101_COPY: renderCC1101Copy(); break;
         case MENU_CC1101_REPLAY: renderCC1101Replay(); break;
         case MENU_ATTACK_DRONE_JAMMER: renderDroneJammer(); break;
@@ -952,6 +1089,8 @@ void menuLoop() {
             break;
         case MENU_NRF24_JAMMER: handleNRF24Jammer(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
         case MENU_NRF24_SCANNER: handleNRF24Scanner(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
+        case MENU_NRF24_ANALYZE: handleNRF24Analyze(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
+        case MENU_NRF24_ANALYZE_DETAIL: handleNRF24AnalyzeDetail(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
         case MENU_CC1101_COPY: handleCC1101Copy(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
         case MENU_CC1101_REPLAY: handleCC1101Replay(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
         case MENU_ATTACK_DRONE_JAMMER: handleDroneJammer(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
