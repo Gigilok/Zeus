@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // ============================================================
-// PINOS - Crazy Cat v3.1
+// PINOS - Zeus (ORIGINAIS - NAO ALTERAR)
 // ============================================================
 
 // TELA OLED (I2C)
@@ -17,19 +17,19 @@
 #define BTN_SELECT  32  // Marrom
 #define BTN_BACK    33  // Preto
 
-// NRF24L01 - Usa HSPI (SPI2)
+// NRF24L01
 #define NRF_CE      26  // Amarelo
 #define NRF_CSN     25  // Azul
-#define NRF_SCK     18  // Verde  (HSPI SCK)
-#define NRF_MOSI    23  // Roxo   (HSPI MOSI)
-#define NRF_MISO    19  // Cinza  (HSPI MISO)
+#define NRF_SCK     18  // Verde
+#define NRF_MOSI    23  // Roxo
+#define NRF_MISO    19  // Cinza
 
-// CC1101 - Usa VSPI (SPI3) - PINOS DIFERENTES!
+// CC1101 - PINOS ORIGINAIS
 #define CC1101_GDO0  4  // Azul
-#define CC1101_CSN  27  // Roxo
-#define CC1101_SCK  14  // Amarelo (VSPI SCK)
-#define CC1101_MOSI 13  // Verde   (VSPI MOSI)
-#define CC1101_MISO 12  // Vermelho (VSPI MISO)
+#define CC1101_CSN  27  // Roxo  <- MANTIDO NO 27
+#define CC1101_SCK  14  // Amarelo
+#define CC1101_MOSI 13  // Verde
+#define CC1101_MISO 12  // Vermelho
 #define CC1101_GDO2 16  // Laranja
 
 // ============================================================
