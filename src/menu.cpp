@@ -13,6 +13,7 @@ extern void updateDisplay();
 extern void drawMenuHeader(const char* title);
 extern void drawMenuItem(int y, const char* text, bool selected);
 extern void drawStatusBar(const char* status);
+extern void drawProgressBar(int x, int y, int width, int height, int percent);
 extern void drawText(int x, int y, const char* text, uint8_t size);
 extern void drawCenteredText(int y, const char* text, uint8_t size);
 extern void showMessage(const char* title, const char* message);
@@ -243,7 +244,6 @@ void renderNRF24Scanner() {
         drawCenteredText(30, "Escaneando...", 1);
         int pct = ((millis() - captureStartTime) * 100) / 5000;
         if (pct > 100) pct = 100;
-        extern void drawProgressBar(int, int, int, int, int);
         drawProgressBar(14, 45, 100, 8, pct);
     } else {
         if (nrf24GetDeviceCount() == 0) {
@@ -273,7 +273,6 @@ void renderCC1101Copy() {
         snprintf(buf, 32, "%lu ms", elapsed);
         drawCenteredText(20, "Capturando...", 1);
         drawCenteredText(32, buf, 1);
-        extern void drawProgressBar(int, int, int, int, int);
         drawProgressBar(14, 45, 100, 8, pct);
     } else {
         char buf[32];
@@ -578,7 +577,6 @@ void renderBFGate() {
         snprintf(buf, 32, "%d/%d", getCurrentBFIndex(), getTotalBFCount(0, 0));
         drawCenteredText(25, buf, 1);
         int pct = (getCurrentBFIndex() * 100) / getTotalBFCount(0, 0);
-        extern void drawProgressBar(int, int, int, int, int);
         drawProgressBar(14, 40, 100, 8, pct);
         drawCenteredText(55, "SEL: Parar", 1);
     } else {
@@ -614,7 +612,6 @@ void renderBFCar() {
         snprintf(buf, 32, "%d/%d", getCurrentBFIndex(), getTotalBFCount(1, listIndex));
         drawCenteredText(25, buf, 1);
         int pct = (getCurrentBFIndex() * 100) / getTotalBFCount(1, listIndex);
-        extern void drawProgressBar(int, int, int, int, int);
         drawProgressBar(14, 40, 100, 8, pct);
         drawCenteredText(55, "SEL: Parar", 1);
         updateDisplay();
@@ -663,7 +660,6 @@ void renderSettingsBrightness() {
     char buf[32];
     snprintf(buf, 32, "Brilho: %d%%", (screenBrightness * 100) / 255);
     drawCenteredText(25, buf, 1);
-    extern void drawProgressBar(int, int, int, int, int);
     drawProgressBar(14, 40, 100, 10, (screenBrightness * 100) / 255);
     drawCenteredText(55, "UP/DOWN: Ajustar", 1);
     updateDisplay();
