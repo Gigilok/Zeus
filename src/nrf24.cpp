@@ -59,11 +59,6 @@ static DetectedSignal jammerDetectedSignals[NRF_MAX_DETECTED];
 static uint8_t jammerDetectedCount = 0;
 static int8_t jammerSelectedIndex = 0;
 
-// ============================================================
-// KILL ALL - Buffer de payload para transmissao rapida
-// ============================================================
-static uint8_t jamPayload[32];  // Payload vazio para jamming
-
 static void hardResetNRF24() {
     digitalWrite(NRF_CE, LOW);
     delay(150);
@@ -88,10 +83,6 @@ bool nrf24Init() {
     radio.setAutoAck(false);
     radio.disableCRC();
     radio.stopListening();
-    
-    // Preenche payload de jamming com 0xFF
-    for (int i = 0; i < 32; i++) jamPayload[i] = 0xFF;
-    
     return true;
 }
 
@@ -300,6 +291,22 @@ void nrf24JammerSetSelectedIndex(int8_t idx) {
 // ============================================================
 // JAMMER - KILL ALL / SELECT CH
 // ============================================================
+//
+// ABORDAGEM CORRETA (confirmada por smoochiee, Bruce, RF-Clown):
+//
+// KILL ALL (todos os canais):
+//   1. Chama startConstCarrier() UMA VEZ para iniciar a portadora
+//   2. No loop, chama setChannel() para fazer hopping rapido
+//   3. O CONT_WAVE bit permanece ativo, entao o sinal continua emitido
+//   4. setChannel() apenas muda o RF_CH registrador
+//
+// SELECT CH (um canal):
+//   1. Chama startConstCarrier() UMA VEZ para iniciar a portadora
+//   2. NUNCA chama setChannel() no loop
+//   3. O sinal permanece fixo no canal configurado
+//
+// ============================================================
+
 void nrf24StartJammer() {
     if (nrf24JammerActive) return;
     nrf24JammerActive = true;
@@ -308,7 +315,7 @@ void nrf24StartJammer() {
     jamHistoryIndex = 0;
     for (int i = 0; i < 16; i++) jamHistory[i] = 0;
 
-    // Se modo SELECT e tem canais detectados, usa o canal selecionado
+    // Configura o canal inicial
     if (jamSelectMode && jammerDetectedCount > 0 && jammerSelectedIndex >= 0) {
         jamChannel = jammerDetectedSignals[jammerSelectedIndex].channel;
     } else {
@@ -316,42 +323,25 @@ void nrf24StartJammer() {
     }
 
     jamLastSwitch = 0;
-    radio.setAutoAck(false);
-    radio.stopListening();
-    radio.setRetries(0, 0);
-    radio.setPALevel(RF24_PA_MAX, true);
-    radio.setDataRate(RF24_2MBPS);
-    radio.setCRCLength(RF24_CRC_DISABLED);
 
-    if (jamSelectMode) {
-        // === MODO SELECT CH: onda continua em UM canal fixo ===
-        // startConstCarrier configura o canal internamente via setChannel
-        // e mantem CE HIGH emitindo onda continua no RF_CH configurado
-        radio.startConstCarrier(RF24_PA_MAX, jamChannel);
-    } else {
-        // === MODO KILL ALL: hopping rapido transmitindo pacotes ===
-        // NAO usar startConstCarrier aqui - precisamos mudar de canal rapidamente
-        // Configura para transmissao rapida de pacotes vazios
-        radio.setChannel(jamChannel);
-        // Abre um pipe de escrita com endereco dummy
-        uint8_t dummyAddr[5] = {0x00, 0x00, 0x00, 0x00, 0x00};
-        radio.openWritingPipe(dummyAddr);
-        // Preenche TX FIFO com payloads para transmissao imediata
-        radio.startFastWrite(jamPayload, 32, true, false);  // multicast=true (no ACK), startTx=false
-    }
+    // === INICIA A PORTADORA CONTINUA ===
+    // startConstCarrier() faz:
+    //   - stopListening()
+    //   - Seta CONT_WAVE + PLL_LOCK no RF_SETUP
+    //   - Configura TX para P variant (autoAck off, retries 0, etc)
+    //   - setPALevel()
+    //   - setChannel()  <-- ja configura o canal aqui!
+    //   - ce(HIGH) para iniciar TX
+    //   - Para P variant: ce(LOW) + reUseTX()
+    //
+    // O bit CONT_WAVE permanece ativo no RF_SETUP, entao o chip
+    // continua emitindo portadora quando em modo TX.
+    radio.startConstCarrier(RF24_PA_MAX, jamChannel);
 }
 
 void nrf24StopJammer() {
     if (!nrf24JammerActive) return;
-    
-    if (jamSelectMode) {
-        // No modo SELECT, usamos startConstCarrier, entao paramos com stopConstCarrier
-        radio.stopConstCarrier();
-    } else {
-        // No modo KILL, apenas paramos a transmissao
-        radio.ce(false);  // CE LOW = para transmissao
-    }
-    
+    radio.stopConstCarrier();
     radio.stopListening();
     radio.flush_tx();
     nrf24JammerActive = false;
@@ -364,14 +354,16 @@ int nrf24JammerLoop() {
 
     // Atualiza dados reais do grafico baseado na atividade do jammer
     jamHistoryIndex = (jamHistoryIndex + 1) % 16;
-    
+
     if (jamSelectMode) {
-        // === MODO SELECT CH: FIXO no canal selecionado ===
-        // startConstCarrier() ja configurou o canal no RF_CH e mantem CE HIGH.
-        // NUNCA chamar radio.setChannel() aqui - isso sobrescreveria o RF_CH
-        // e poderia desconfigurar o modo de onda continua.
-        // O chip permanece em TX mode com CE HIGH emitindo no canal fixo.
-        
+        // ============================================================
+        // MODO SELECT CH: FIXO no canal selecionado
+        // ============================================================
+        // NUNCA chamar setChannel() aqui!
+        // startConstCarrier() ja configurou o canal no RF_CH.
+        // O bit CONT_WAVE no RF_SETUP mantem a portadora ativa.
+        // O canal permanece fixo.
+
         for (int i = 0; i < 16; i++) {
             if (i == (jamChannel / 8)) {
                 jamHistory[i] = min(jamHistory[i] + 10, 40);
@@ -382,9 +374,13 @@ int nrf24JammerLoop() {
         return jamChannel;
     }
 
-    // === MODO KILL ALL: hopping de canais transmitindo pacotes ===
-    // Usamos writeFast para transmitir rapidamente enquanto mudamos de canal
-    
+    // ============================================================
+    // MODO KILL ALL: hopping de TODOS os canais
+    // ============================================================
+    // setChannel() muda o registrador RF_CH, mantendo CONT_WAVE ativo.
+    // Isso faz o chip emitir portadora no novo canal.
+    // O hopping rapido cobre toda a banda 2.4GHz.
+
     int activeBar = (jamChannel / 8) % 16;
     for (int i = 0; i < 16; i++) {
         if (i == activeBar) {
@@ -394,22 +390,20 @@ int nrf24JammerLoop() {
         }
     }
 
-    // Transmite um pacote no canal atual antes de mudar
-    // Usa multicast=true (no ACK) para transmissao rapida sem esperar
-    radio.writeFast(jamPayload, 32, true);  // true = no ACK
-    
-    // Muda de canal a cada 500 microssegundos para cobrir toda a banda rapidamente
+    // Muda de canal a cada 500 microssegundos para cobrir toda a banda
     if (micros() - jamLastSwitch >= 500) {
         jamLastSwitch = micros();
         jamChannel++;
         jamChannelPackets = 0;
         if (jamChannel > 125) jamChannel = 0;
-        
-        // No KILL ALL, mudamos de canal com setChannel
-        // Isso funciona porque nao estamos usando startConstCarrier
+
+        // === MUDA O CANAL ===
+        // setChannel() escreve no registrador RF_CH (0x05).
+        // O bit CONT_WAVE no RF_SETUP permanece ativo.
+        // O chip continua emitindo portadora, agora no novo canal.
         radio.setChannel(jamChannel);
     }
-    
+
     return jamChannel;
 }
 
@@ -425,10 +419,9 @@ void nrf24JammerSetSelectedChannel(int ch) {
     if (ch < 0) ch = 0;
     if (ch > 125) ch = 125;
     jamSelectedChannel = ch;
-    
+
     // Se estiver ativo no modo SELECT e quiser mudar de canal,
     // precisamos parar e reiniciar o startConstCarrier no novo canal
-    // porque setChannel() sozinho nao funciona bem com CONT_WAVE ativo
     if (nrf24JammerActive && jamSelectMode) {
         jamChannel = ch;
         jamChannelPackets = 0;
