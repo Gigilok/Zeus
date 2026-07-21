@@ -36,6 +36,21 @@ extern const int8_t* nrf24GetScanHistory();
 extern int nrf24GetScanIndex();
 extern uint32_t nrf24GetScanTotalPackets();
 extern const int8_t* nrf24GetScanBarData();
+
+// Scanner spectrum bars (estilo imagem - barras finas)
+extern void nrf24SpecInit();
+extern void nrf24SpecScan();
+extern void nrf24SpecStart();
+extern void nrf24SpecStop();
+extern bool nrf24SpecIsRunning();
+extern uint32_t nrf24SpecGetFrames();
+extern const int8_t* nrf24SpecGetBars();
+extern int8_t nrf24SpecGetSelectedBar();
+extern void nrf24SpecSetSelectedBar(int8_t bar);
+extern int8_t nrf24SpecGetBarChannel(int8_t bar);
+#define SPEC_BARS 64
+#define SPEC_BAR_WIDTH 1
+#define SPEC_BAR_GAP 1
 extern void nrf24StartAnalyze();
 extern bool nrf24IsAnalyzing();
 extern uint8_t nrf24GetDetectedCount();
@@ -200,6 +215,8 @@ void goBack() {
     }
     if (nrf24JammerActive) { nrf24StopJammer(); }
     if (nrf24IsScanning()) nrf24StopScan();
+    if (scannerRunning) nrf24SpecStop();
+    scannerRunning = false;
     if (deauthActive) stopDeauth();
     if (cameraFreezeActive) stopCameraFreeze();
     if (droneJammerActive) stopDroneJammer();
@@ -284,48 +301,64 @@ void renderNRF24Jammer() {
 }
 
 // ============================================================
-// SCANNER - CORRIGIDO
+// SCANNER SPECTRUM BARS (estilo imagem - barras finas + cursor)
 // ============================================================
+static bool scannerRunning = false;
+
+void drawSpecBars() {
+    const int8_t* bars = nrf24SpecGetBars();
+    const int baseY = 62;      // Linha base
+    const int maxHeight = 48;  // Altura máxima (deixa espaço pro header)
+    const int startY = baseY - maxHeight;  // Topo do gráfico = 14
+
+    for (int i = 0; i < SPEC_BARS; i++) {
+        int x = i * (SPEC_BAR_WIDTH + SPEC_BAR_GAP);
+        if (x >= SCREEN_WIDTH) break;
+
+        // Mapeia RSSI (-100 a 0) para altura (0 a maxHeight)
+        int h = map(bars[i], -100, -40, 2, maxHeight);
+        if (h < 2) h = 2;
+        if (h > maxHeight) h = maxHeight;
+
+        int y = baseY - h;
+
+        // Se é a barra selecionada, destaca (inverte)
+        if (i == nrf24SpecGetSelectedBar()) {
+            getDisplay().fillRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_BLACK);
+            getDisplay().drawRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_WHITE);
+        } else {
+            getDisplay().fillRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_WHITE);
+        }
+    }
+
+    // Linha base
+    getDisplay().drawLine(0, baseY, SCREEN_WIDTH, baseY, SSD1306_WHITE);
+}
+
 void renderNRF24Scanner() {
     clearDisplay();
-    drawMenuHeader("SCAN");
 
-    if (nrf24IsScanning()) {
-        // Executa o scan loop para atualizar dados
-        nrf24ScanLoop();
-
-        // Contador de pacotes no canto superior direito
-        char pktBuf[16];
-        snprintf(pktBuf, 16, "P:%lu", nrf24GetScanTotalPackets());
-        getDisplay().setTextSize(1);
-        getDisplay().setTextColor(SSD1306_WHITE);
-        getDisplay().setCursor(90, 2);
-        getDisplay().print(pktBuf);
-
-        // Grafico REAL de barras
-        const int8_t* barData = nrf24GetScanBarData();
-        drawRealSpectrum(0, 62, 8, 16, 40, barData);
-
-        // Lista de sinais detectados
-        uint8_t dcount = nrf24GetDetectedCount();
-        if (dcount > 0) {
-            getDisplay().setTextSize(1);
-            getDisplay().setTextColor(SSD1306_WHITE);
-            int y = 14;
-            for (int i = 0; i < dcount && i < 2 && y < 22; i++) {
-                DetectedSignal* sig = nrf24GetDetected(i);
-                if (sig && sig->active) {
-                    char buf[20];
-                    snprintf(buf, 20, "CH%d:%d", sig->channel, sig->rssi);
-                    getDisplay().setCursor(0, y);
-                    getDisplay().print(buf);
-                    y += 10;
-                }
-            }
-        }
-    } else {
-        drawCenteredText(32, "SCAN", 2);
+    if (scannerRunning) {
+        nrf24SpecScan();
     }
+
+    // Desenha as barras
+    drawSpecBars();
+
+    // Mostra canal selecionado no topo (invertido para destacar)
+    int8_t selBar = nrf24SpecGetSelectedBar();
+    int8_t selCh = nrf24SpecGetBarChannel(selBar);
+
+    char chBuf[16];
+    snprintf(chBuf, 16, "CH %d", selCh);
+
+    // Fundo preto na área do texto para legibilidade
+    getDisplay().fillRect(0, 0, 50, 10, SSD1306_BLACK);
+    getDisplay().setTextSize(1);
+    getDisplay().setTextColor(SSD1306_WHITE);
+    getDisplay().setCursor(2, 2);
+    getDisplay().print(chBuf);
+
     updateDisplay();
 }
 
@@ -471,11 +504,25 @@ void handleNRF24Jammer(ButtonState btn) {
 }
 
 void handleNRF24Scanner(ButtonState btn) {
-    if (!nrf24IsScanning()) {
-        nrf24StartScan();
+    if (btn == BTN_PRESSED_UP) {
+        int8_t sel = nrf24SpecGetSelectedBar();
+        if (sel > 0) nrf24SpecSetSelectedBar(sel - 1);
+    }
+    if (btn == BTN_PRESSED_DOWN) {
+        int8_t sel = nrf24SpecGetSelectedBar();
+        if (sel < SPEC_BARS - 1) nrf24SpecSetSelectedBar(sel + 1);
+    }
+    if (btn == BTN_PRESSED_SELECT) {
+        scannerRunning = !scannerRunning;
+        if (scannerRunning) {
+            nrf24SpecStart();
+        } else {
+            nrf24SpecStop();
+        }
     }
     if (btn == BTN_PRESSED_BACK) {
-        nrf24StopScan();
+        scannerRunning = false;
+        nrf24SpecStop();
         goBack();
     }
 }
