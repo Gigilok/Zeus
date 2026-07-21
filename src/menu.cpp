@@ -213,7 +213,7 @@ void goBack() {
             enterMenu(MENU_SETTINGS); break;
         default: enterMenu(MENU_MAIN); break;
     }
-    if (nrf24JammerActive) { nrf24StopJammer(); }
+    if (nrf24JammerActive) { Serial.println("[MENU] goBack: parando jammer"); nrf24StopJammer(); }
     if (nrf24IsScanning()) nrf24StopScan();
     if (deauthActive) stopDeauth();
     if (cameraFreezeActive) stopCameraFreeze();
@@ -348,6 +348,7 @@ void renderNRF24Jammer() {
         }
     } else {
         // === JAMMER ATIVO ===
+        Serial.println("[MENU] Render: JAMMER ATIVO");
         int ch = nrf24JammerLoop();
         uint32_t pkts = nrf24GetJamTotalPackets();
         const int8_t* jamData = nrf24GetJamHistory();
@@ -545,6 +546,18 @@ void handleNRF24AnalyzeDetail(ButtonState btn) {
 // JAMMER HANDLER - CORRIGIDO COM LISTA DE CANAIS
 // ============================================================
 void handleNRF24Jammer(ButtonState btn) {
+    Serial.print("[MENU] handleNRF24Jammer btn=");
+    switch(btn) {
+        case BTN_NONE: Serial.println("NONE"); break;
+        case BTN_PRESSED_UP: Serial.println("UP"); break;
+        case BTN_PRESSED_DOWN: Serial.println("DOWN"); break;
+        case BTN_PRESSED_SELECT: Serial.println("SELECT"); break;
+        case BTN_PRESSED_BACK: Serial.println("BACK"); break;
+    }
+    Serial.print("[MENU]   jammerScreenState="); Serial.println(jammerScreenState);
+    Serial.print("[MENU]   jammerMenuOption="); Serial.println(jammerMenuOption);
+    Serial.print("[MENU]   jamSelectMode="); Serial.println(nrf24JammerIsSelectMode() ? "true" : "false");
+    Serial.print("[MENU]   nrf24JammerActive="); Serial.println(nrf24JammerActive ? "true" : "false");
     if (!nrf24IsJammerActive()) {
         if (jammerScreenState == 0) {
             // === TELA 1: Selecao KILL ALL / SELECT CH ===
@@ -554,11 +567,13 @@ void handleNRF24Jammer(ButtonState btn) {
             if (btn == BTN_PRESSED_SELECT) {
                 if (jammerMenuOption == 1) {
                     // SELECT CH: vai para tela de lista de canais
+                    Serial.println("[MENU] SELECT CH selecionado! Indo para lista...");
                     jammerScreenState = 1;
                     nrf24JammerSetSelectMode(true);
                     jammerChannelScanned = false;
                 } else {
                     // KILL ALL: inicia jammer imediatamente (SEM escolha de canal)
+                    Serial.println("[MENU] KILL ALL selecionado! Iniciando jammer...");
                     jammerScreenState = 2;
                     nrf24JammerSetSelectMode(false);
                     nrf24StartJammer();
@@ -591,6 +606,7 @@ void handleNRF24Jammer(ButtonState btn) {
             }
             if (btn == BTN_PRESSED_SELECT && dcount > 0) {
                 // Inicia jammer no canal selecionado da lista
+                Serial.println("[MENU] Iniciando jammer no canal selecionado!");
                 jammerScreenState = 2;
                 nrf24StartJammer();
             }
@@ -606,6 +622,7 @@ void handleNRF24Jammer(ButtonState btn) {
         // === JAMMER ATIVO ===
         nrf24JammerLoop();
         if (btn == BTN_PRESSED_SELECT || btn == BTN_PRESSED_BACK) {
+            Serial.println("[MENU] Parando jammer (SELECT/BACK pressionado)...");
             nrf24StopJammer();
             jammerScreenState = 0;
             jammerMenuOption = 0;
