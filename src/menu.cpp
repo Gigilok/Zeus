@@ -37,16 +37,18 @@ extern int nrf24GetScanIndex();
 extern uint32_t nrf24GetScanTotalPackets();
 extern const int8_t* nrf24GetScanBarData();
 
-// Scanner spectrum bars (estilo imagem - barras finas)
+// Scanner spectrum bars (scrolling - barras deslizantes)
 extern void nrf24SpecInit();
 extern void nrf24SpecScan();
 extern void nrf24SpecStart();
 extern void nrf24SpecStop();
 extern bool nrf24SpecIsRunning();
 extern uint32_t nrf24SpecGetFrames();
-extern const int8_t* nrf24SpecGetBars();
+extern int8_t nrf24SpecGetBarValue(int displayIdx);
 extern int8_t nrf24SpecGetSelectedBar();
 extern void nrf24SpecSetSelectedBar(int8_t bar);
+extern int8_t nrf24SpecGetAnalysisChannel();
+extern void nrf24SpecSetAnalysisChannel(int8_t ch);
 extern int8_t nrf24SpecGetBarChannel(int8_t bar);
 #define SPEC_BARS 64
 #define SPEC_BAR_WIDTH 1
@@ -412,18 +414,6 @@ void handleNRF24Scanner(ButtonState btn) {
             nrf24SpecSetSelectedBar(sel + 1);
         }
     }
-    if (btn == BTN_PRESSED_LEFT) {
-        int8_t ch = nrf24SpecGetAnalysisChannel();
-        if (ch > 0) {
-            nrf24SpecSetAnalysisChannel(ch - 1);
-        }
-    }
-    if (btn == BTN_PRESSED_RIGHT) {
-        int8_t ch = nrf24SpecGetAnalysisChannel();
-        if (ch < 124) {
-            nrf24SpecSetAnalysisChannel(ch + 1);
-        }
-    }
     if (btn == BTN_PRESSED_SELECT) {
         scannerRunning = !scannerRunning;
         if (scannerRunning) {
@@ -580,29 +570,7 @@ void handleNRF24Jammer(ButtonState btn) {
     }
 }
 
-void handleNRF24Scanner(ButtonState btn) {
-    if (btn == BTN_PRESSED_UP) {
-        int8_t sel = nrf24SpecGetSelectedBar();
-        if (sel > 0) nrf24SpecSetSelectedBar(sel - 1);
-    }
-    if (btn == BTN_PRESSED_DOWN) {
-        int8_t sel = nrf24SpecGetSelectedBar();
-        if (sel < SPEC_BARS - 1) nrf24SpecSetSelectedBar(sel + 1);
-    }
-    if (btn == BTN_PRESSED_SELECT) {
-        scannerRunning = !scannerRunning;
-        if (scannerRunning) {
-            nrf24SpecStart();
-        } else {
-            nrf24SpecStop();
-        }
-    }
-    if (btn == BTN_PRESSED_BACK) {
-        scannerRunning = false;
-        nrf24SpecStop();
-        goBack();
-    }
-}
+
 
 // ============================================================
 // OUTROS HANDLERS E RENDERERS
