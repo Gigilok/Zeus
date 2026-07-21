@@ -191,6 +191,12 @@ void enterMenu(MenuState state) {
     }
 }
 
+static int jammerScreenState = 0;
+static int jammerMenuOption = 0;
+static bool jammerChannelScanned = false;
+static int8_t jammerListScroll = 0;
+static int8_t analyzeScrollIndex = 0;
+
 void goBack() {
     switch (currentMenu) {
         case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS: case MENU_NETWORKS: case MENU_SETTINGS:
@@ -277,10 +283,6 @@ void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int ma
 //         1 = lista de canais detectados (SELECT CH)
 //         2 = jammer ativo
 
-static int jammerScreenState = 0;
-static int jammerMenuOption = 0;
-static bool jammerChannelScanned = false;
-static int8_t jammerListScroll = 0;
 
 void renderNRF24Jammer() {
     clearDisplay();
@@ -416,7 +418,6 @@ void renderNRF24Scanner() {
 // ============================================================
 // ANALYZER - CORRIGIDO COM SCROLL
 // ============================================================
-static int8_t analyzeScrollIndex = 0;
 
 void renderNRF24Analyze() {
     clearDisplay();
