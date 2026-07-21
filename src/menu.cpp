@@ -672,8 +672,7 @@ void renderDeauth() {
         NetworkInfo* net = getNetwork(listIndex);
         if (net) {
             char buf[64];
-            snprintf(buf, 64, "Desautenticando:
-%s", net->ssid);
+            snprintf(buf, 64, "Desautenticando: %s", net->ssid);
             drawText(0, 14, buf, 1);
         }
         drawCenteredText(50, "SEL: Parar", 1);
@@ -873,8 +872,7 @@ void renderBluetooth() {
         BTDevice* dev = getBTDevice(listIndex);
         if (dev) {
             char buf[64];
-            snprintf(buf, 64, "Jamming:
-%s", dev->name);
+            snprintf(buf, 64, "Jamming: %s", dev->name);
             drawText(0, 14, buf, 1);
         }
         drawCenteredText(50, "SEL: Parar", 1);
