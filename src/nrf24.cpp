@@ -360,6 +360,13 @@ int8_t nrf24SpecGetBarValue(int displayIdx) {
     return specBarValues[ringIdx];
 }
 
+// Stubs para compatibilidade com menu.cpp antigo
+// (scanner nao usa mais canal selecionado, varre banda toda)
+int8_t nrf24SpecGetSelectedBar() { return 32; }
+void nrf24SpecSetSelectedBar(int8_t bar) { (void)bar; }
+int8_t nrf24SpecGetAnalysisChannel() { return 64; }
+void nrf24SpecSetAnalysisChannel(int8_t ch) { (void)ch; }
+
 // ============================================================
 // WATERFALL
 // ============================================================
