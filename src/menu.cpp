@@ -506,9 +506,12 @@ void handleNRF24Jammer(ButtonState btn) {
 // ============================================================
 // DEAUTH - EXATAMENTE IGUAL AO VÍDEO
 // ============================================================
-// Tela 1: Lista de redes WiFi (SSID + RSSI) - LIMPA, sem texto no canto
-// Tela 2: Network Details (SSID, Auth, Status, Pkts, Succ%)
-// Tela 3: Atacando (Status: Running, Pkts contando)
+// Fluxo:
+//   1. Lista de redes (SSID | RSSI) - TELA LIMPA, sem texto no canto
+//   2. SELECT na rede → Tela "Network Details"
+//      (SSID, Auth, Status, Pkts, Succ%, "Press SELECT to Start")
+//   3. SELECT → inicia ataque (Status: Running, Pkts ↑, Succ% ↑)
+//   4. SELECT/BACK → para ataque
 
 void drawNetworkItem(int index, int y, bool selected) {
     if (selected) {
@@ -526,58 +529,58 @@ void drawNetworkItem(int index, int y, bool selected) {
     if (selected) getDisplay().setTextColor(1);
 }
 
-// TELA DE DETALHES DO DEAUTH (igual ao vídeo)
+// TELA DE DETALHES DA REDE (após selecionar na lista)
 void renderDeauthDetail() {
     clearDisplay();
     drawMenuHeader("Network Details");
 
     NetworkInfo* net = getNetwork(deauthSelectedNetwork);
     if (!net) {
-        drawCenteredText(30, "Erro rede", 1);
+        drawCenteredText(30, "Erro: rede invalida", 1);
         updateDisplay();
         return;
     }
 
     char buf[64];
 
-    // SSID
+    // Linha 1: SSID
     snprintf(buf, 64, "SSID: %s", net->ssid);
     drawText(0, 12, buf, 1);
 
-    // Auth
+    // Linha 2: Auth
     snprintf(buf, 64, "Auth: %s", net->encrypted ? "WPA/WPA2" : "OPEN");
     drawText(0, 22, buf, 1);
 
-    // Status
+    // Linha 3: Status (Stopped / Running)
     snprintf(buf, 64, "Status: %s", deauthActive ? "Running" : "Stopped");
     drawText(0, 32, buf, 1);
 
-    // Pkts
+    // Linha 4: Pkts (esquerda) e Succ% (direita)
     snprintf(buf, 64, "Pkts: %lu", getDeauthPacketCount());
     drawText(0, 42, buf, 1);
-
-    // Succ%
     snprintf(buf, 64, "Succ: %d%%", getDeauthSuccessPercent());
     drawText(64, 42, buf, 1);
 
-    // Instrução no rodapé
+    // Linha 5: Instrução no rodapé
     if (!deauthActive) {
         drawCenteredText(55, "Press SELECT to Start", 1);
     } else {
-        drawCenteredText(55, "SELECT: Stop", 1);
+        drawCenteredText(55, "SELECT: Stop  BACK: Sair", 1);
     }
 
     updateDisplay();
 }
 
+// TELA DE LISTA DE REDES (tela inicial do deauth)
 void renderDeauth() {
-    // Se estiver na tela de detalhes
+    // Se estiver na tela de detalhes da rede selecionada
     if (deauthDetailView) {
         renderDeauthDetail();
         return;
     }
 
-    // Tela de lista de redes - LIMPA, igual ao vídeo
+    // === TELA DE LISTA DE REDES - LIMPA ===
+    // Só mostra o header e a lista. NADA no canto inferior.
     if (!inListView) {
         inListView = true;
         listIndex = 0;
@@ -594,12 +597,12 @@ void renderDeauth() {
     if (getNetworkCount() == 0) {
         clearDisplay();
         drawMenuHeader("Wi-Fi");
-        drawCenteredText(30, "No networks", 1);
+        drawCenteredText(30, "No networks found", 1);
         updateDisplay();
         return;
     }
 
-    // Lista limpa - só header + redes, NADA no canto inferior
+    // Desenha lista LIMPA - só header + itens
     clearDisplay();
     drawMenuHeader("Wi-Fi Networks");
     int visibleItems = 5;
@@ -607,11 +610,12 @@ void renderDeauth() {
     for (int i = 0; i < visibleItems && (startIndex + i) < (int)getNetworkCount(); i++) {
         drawNetworkItem(startIndex + i, 12 + i * 10, (startIndex + i) == listIndex);
     }
+    // NENHUM texto no canto inferior - tela limpa igual ao vídeo
     updateDisplay();
 }
 
 void handleDeauth(ButtonState btn) {
-    // Se estiver na tela de detalhes
+    // === NA TELA DE DETALHES ===
     if (deauthDetailView) {
         if (btn == BTN_PRESSED_SELECT) {
             if (!deauthActive) {
@@ -628,7 +632,7 @@ void handleDeauth(ButtonState btn) {
         return;
     }
 
-    // Navegação na lista
+    // === NA LISTA DE REDES ===
     if (btn == BTN_PRESSED_SELECT) {
         if (listIndex >= 0 && listIndex < (int)getNetworkCount()) {
             deauthSelectedNetwork = listIndex;
