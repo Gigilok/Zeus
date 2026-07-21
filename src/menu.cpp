@@ -7,7 +7,9 @@ struct NRFDevice {
     int8_t rssi;
 };
 
-// Forward declarations
+// ============================================================
+// FORWARD DECLARATIONS
+// ============================================================
 extern void clearDisplay();
 extern void updateDisplay();
 extern void drawMenuHeader(const char* title);
@@ -25,6 +27,7 @@ extern NRFDevice* nrf24GetDevice(uint8_t);
 
 extern ButtonState readButtons();
 
+// NRF24
 extern bool nrf24IsAvailable();
 extern void nrf24StartJammer();
 extern void nrf24StopJammer();
@@ -36,8 +39,6 @@ extern const int8_t* nrf24GetScanHistory();
 extern int nrf24GetScanIndex();
 extern uint32_t nrf24GetScanTotalPackets();
 extern const int8_t* nrf24GetScanBarData();
-
-// Scanner spectrum bars (scrolling - barras deslizantes)
 extern void nrf24SpecInit();
 extern void nrf24SpecScan();
 extern void nrf24SpecStart();
@@ -70,6 +71,7 @@ extern const int8_t* nrf24GetJamHistory();
 extern uint32_t nrf24GetJamTotalPackets();
 extern uint32_t nrf24GetJamChannelPackets();
 
+// CC1101
 extern bool cc1101IsAvailable();
 extern void cc1101StartCapture();
 extern void cc1101StopCapture();
@@ -78,11 +80,20 @@ extern bool cc1101IsCapturing();
 extern uint8_t cc1101GetSavedCount();
 extern SignalData* cc1101GetSignal(uint8_t);
 
+// WiFi / Deauth
 extern void scanNetworks();
 extern uint8_t getNetworkCount();
 extern NetworkInfo* getNetwork(uint8_t);
 extern void startDeauth(uint8_t);
 extern void stopDeauth();
+extern bool deauthLoop();
+extern uint32_t getDeauthPacketCount();
+extern uint32_t getDeauthSuccessCount();
+extern uint8_t getDeauthSuccessPercent();
+extern const char* getDeauthTargetSSID();
+extern uint8_t getDeauthTargetChannel();
+extern const uint8_t* getDeauthTargetBSSID();
+extern bool getDeauthTargetEncrypted();
 extern void startFakeAP(const char*);
 extern void stopFakeAP();
 extern void startEvilTwin(uint8_t);
@@ -97,12 +108,14 @@ extern void scanRemoteDevices();
 extern uint8_t getRemoteDeviceCount();
 extern RemoteDevice* getRemoteDevice(uint8_t);
 
+// Bluetooth
 extern void startBTScan();
 extern uint8_t getBTDeviceCount();
 extern BTDevice* getBTDevice(uint8_t);
 extern void startBTJammer(uint8_t);
 extern void stopBTJammer();
 
+// BruteForce
 extern void startGateBruteForce();
 extern void startCarBruteForce(uint8_t);
 extern void stopBruteForce();
@@ -112,6 +125,7 @@ extern uint16_t getTotalBFCount(uint8_t type, uint8_t brand);
 extern const char* getCarBrandName(uint8_t);
 extern uint8_t getCarBrandCount();
 
+// Settings
 extern void testAllPins();
 extern uint8_t getPinTestCount();
 struct PinTest { const char* name; bool working; };
@@ -169,6 +183,12 @@ bool capturing = false;
 unsigned long captureStartTime = 0;
 
 // ============================================================
+// DEAUTH STATE (igual ao vídeo)
+// ============================================================
+static int8_t deauthSelectedNetwork = -1;  // -1 = nenhum selecionado ainda
+static bool deauthDetailView = false;       // false = lista, true = tela de detalhes
+
+// ============================================================
 // MENU NAVIGATION
 // ============================================================
 void setMenu(MenuItem* items, uint8_t count, const char* title) {
@@ -178,6 +198,8 @@ void setMenu(MenuItem* items, uint8_t count, const char* title) {
     menuIndex = 0;
     menuMaxIndex = count - 1;
     inListView = false;
+    deauthDetailView = false;
+    deauthSelectedNetwork = -1;
 }
 
 void enterMenu(MenuState state) {
@@ -227,6 +249,8 @@ void goBack() {
     if (bfRunning) stopBruteForce();
     if (capturing) { cc1101StopCapture(); capturing = false; }
     if (inListView) inListView = false;
+    deauthDetailView = false;
+    deauthSelectedNetwork = -1;
 }
 
 // ============================================================
@@ -256,17 +280,11 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 }
 
 // ============================================================
-// SCREEN RENDERERS
+// SPECTRUM / SCANNER (mantido do original)
 // ============================================================
-
-// Desenha grafico de barras real baseado em dados do RF24
-// CORRIGIDO: mapeia de -100 (sem sinal) ate 0 (sinal maximo)
 void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int maxHeight, const int8_t* data) {
     for (int i = 0; i < barCount; i++) {
         int8_t val = data[i];
-        // Mapeia RSSI (-100 a 0) para altura (2 a maxHeight)
-        // -100 = sem sinal (altura minima)
-        // 0 = sinal maximo (altura maxima)
         int h = map(val, -100, 0, 2, maxHeight);
         if (h < 2) h = 2;
         if (h > maxHeight) h = maxHeight;
@@ -277,24 +295,49 @@ void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int ma
     getDisplay().drawLine(startX, startY, startX + barCount * barWidth, startY, SSD1306_WHITE);
 }
 
-// ============================================================
-// JAMMER - KILL ALL OTIMIZADO (SEM MODO SELECT)
-// ============================================================
-// Tela unica: Pronto / Ativo com grafico + contador
+void drawSpecBar(int displayIdx, int x, int baseY, int maxHeight) {
+    int8_t val = nrf24SpecGetBarValue(displayIdx);
+    int h = map(val, 2, 80, 2, maxHeight);
+    if (h < 2) h = 2;
+    if (h > maxHeight) h = maxHeight;
+    int y = baseY - h;
+    int barW = SPEC_BAR_WIDTH;
+    int8_t selBar = nrf24SpecGetSelectedBar();
+    bool isSelected = (displayIdx == selBar);
+    if (isSelected) {
+        getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        getDisplay().drawRect(x, y - 2, barW, 2, SSD1306_WHITE);
+    } else {
+        getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+    }
+}
+
+void drawSpecBars() {
+    const int baseY = 62;
+    const int maxHeight = 48;
+    const int startX = 0;
+    const int barTotalW = SPEC_BAR_WIDTH + SPEC_BAR_GAP;
+    for (int i = 0; i < SPEC_BARS; i++) {
+        int x = startX + i * barTotalW;
+        if (x >= SCREEN_WIDTH) break;
+        drawSpecBar(i, x, baseY, maxHeight);
+    }
+    getDisplay().drawLine(0, baseY, SCREEN_WIDTH, baseY, SSD1306_WHITE);
+    int y64 = baseY - map(64, 2, 80, 2, maxHeight);
+    getDisplay().drawLine(0, y64, SCREEN_WIDTH, y64, SSD1306_WHITE);
+    int y10 = baseY - map(10, 2, 80, 2, maxHeight);
+    getDisplay().drawLine(0, y10, SCREEN_WIDTH, y10, SSD1306_WHITE);
+}
 
 void renderNRF24Jammer() {
     clearDisplay();
     drawMenuHeader("KILL");
-
     if (!nrf24IsJammerActive()) {
-        // === TELA PARADO: Apenas o nome ===
         drawCenteredText(28, "KILL", 2);
     } else {
-        // === JAMMER ATIVO: Pacotes no topo + gráfico ===
         int ch = nrf24JammerLoop();
         uint32_t pkts = nrf24GetJamTotalPackets();
         const int8_t* jamData = nrf24GetJamHistory();
-
         char buf[32];
         snprintf(buf, 32, "CH%d Pkts:%lu", ch, pkts);
         drawCenteredText(10, buf, 1);
@@ -303,124 +346,40 @@ void renderNRF24Jammer() {
     updateDisplay();
 }
 
-// ============================================================
-// SCANNER SPECTRUM BARS - SCROLLING (barras deslizantes)
-// Sinal entra pela DIREITA, historico empurra para ESQUERDA
-// ============================================================
-
-// Desenha uma barra individual no display
-// displayIdx: 0=esquerda (mais antigo), 63=direita (mais recente)
-void drawSpecBar(int displayIdx, int x, int baseY, int maxHeight) {
-    int8_t val = nrf24SpecGetBarValue(displayIdx);
-
-    // Mapeia valor (2-80) para altura em pixels
-    int h = map(val, 2, 80, 2, maxHeight);
-    if (h < 2) h = 2;
-    if (h > maxHeight) h = maxHeight;
-
-    int y = baseY - h;
-    int barW = SPEC_BAR_WIDTH;
-
-    // Verifica se esta barra esta selecionada
-    int8_t selBar = nrf24SpecGetSelectedBar();
-    bool isSelected = (displayIdx == selBar);
-
-    if (isSelected) {
-        // Barra selecionada: branca com contorno
-        getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
-        getDisplay().drawRect(x, y - 2, barW, 2, SSD1306_WHITE); // pico indicador
-    } else {
-        // Cor baseada na intensidade
-        if (val > 50) {
-            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
-        } else if (val > 30) {
-            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
-        } else if (val > 15) {
-            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
-        } else {
-            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
-        }
-    }
-}
-
-void drawSpecBars() {
-    const int baseY = 62;      // Linha base
-    const int maxHeight = 48;  // Altura maxima
-    const int startX = 0;
-    const int barTotalW = SPEC_BAR_WIDTH + SPEC_BAR_GAP; // 4px
-
-    for (int i = 0; i < SPEC_BARS; i++) {
-        int x = startX + i * barTotalW;
-        if (x >= SCREEN_WIDTH) break;
-        drawSpecBar(i, x, baseY, maxHeight);
-    }
-
-    // Linha base
-    getDisplay().drawLine(0, baseY, SCREEN_WIDTH, baseY, SSD1306_WHITE);
-
-    // Linha de referencia verde (64) - aprox 1/4 da altura
-    int y64 = baseY - map(64, 2, 80, 2, maxHeight);
-    getDisplay().drawLine(0, y64, SCREEN_WIDTH, y64, SSD1306_WHITE);
-
-    // Linha de referencia amarela (10) - proximo da base
-    int y10 = baseY - map(10, 2, 80, 2, maxHeight);
-    getDisplay().drawLine(0, y10, SCREEN_WIDTH, y10, SSD1306_WHITE);
-}
-
 void renderNRF24Scanner() {
     clearDisplay();
-
-    if (scannerRunning) {
-        nrf24SpecScan();
-    }
-
-    // Desenha as barras
+    if (scannerRunning) nrf24SpecScan();
     drawSpecBars();
-
-    // Mostra canal selecionado no topo (invertido para destacar)
     int8_t selBar = nrf24SpecGetSelectedBar();
     int8_t selCh = nrf24SpecGetAnalysisChannel();
     int freq = 2400 + selCh;
-
     char chBuf[20];
     snprintf(chBuf, 20, "CH %d %dMHz", selCh, freq);
-
-    // Fundo preto na area do texto para legibilidade
     getDisplay().fillRect(0, 0, 90, 10, SSD1306_BLACK);
     getDisplay().setTextSize(1);
     getDisplay().setTextColor(SSD1306_WHITE);
     getDisplay().setCursor(2, 2);
     getDisplay().print(chBuf);
-
-    // Mostra frame count no canto direito
     char frameBuf[12];
     snprintf(frameBuf, 12, "%lu", nrf24SpecGetFrames());
     getDisplay().setCursor(100, 2);
     getDisplay().print(frameBuf);
-
     updateDisplay();
 }
 
 void handleNRF24Scanner(ButtonState btn) {
     if (btn == BTN_PRESSED_UP) {
         int8_t sel = nrf24SpecGetSelectedBar();
-        if (sel > 0) {
-            nrf24SpecSetSelectedBar(sel - 1);
-        }
+        if (sel > 0) nrf24SpecSetSelectedBar(sel - 1);
     }
     if (btn == BTN_PRESSED_DOWN) {
         int8_t sel = nrf24SpecGetSelectedBar();
-        if (sel < SPEC_BARS - 1) {
-            nrf24SpecSetSelectedBar(sel + 1);
-        }
+        if (sel < SPEC_BARS - 1) nrf24SpecSetSelectedBar(sel + 1);
     }
     if (btn == BTN_PRESSED_SELECT) {
         scannerRunning = !scannerRunning;
-        if (scannerRunning) {
-            nrf24SpecStart();
-        } else {
-            nrf24SpecStop();
-        }
+        if (scannerRunning) nrf24SpecStart();
+        else nrf24SpecStop();
     }
     if (btn == BTN_PRESSED_BACK) {
         scannerRunning = false;
@@ -429,14 +388,9 @@ void handleNRF24Scanner(ButtonState btn) {
     }
 }
 
-// ============================================================
-// ANALYZER - CORRIGIDO COM SCROLL
-// ============================================================
-
 void renderNRF24Analyze() {
     clearDisplay();
     drawMenuHeader("ANALISAR");
-
     if (nrf24IsAnalyzing()) {
         drawCenteredText(28, "Analisando...", 1);
     } else {
@@ -448,39 +402,26 @@ void renderNRF24Analyze() {
         } else {
             uint8_t sel = nrf24GetAnalyzeSelected();
             const int MAX_VISIBLE_ITEMS = 5;
-
-            if (sel < analyzeScrollIndex) {
-                analyzeScrollIndex = sel;
-            }
-            if (sel >= analyzeScrollIndex + MAX_VISIBLE_ITEMS) {
-                analyzeScrollIndex = sel - MAX_VISIBLE_ITEMS + 1;
-            }
-
+            if (sel < analyzeScrollIndex) analyzeScrollIndex = sel;
+            if (sel >= analyzeScrollIndex + MAX_VISIBLE_ITEMS) analyzeScrollIndex = sel - MAX_VISIBLE_ITEMS + 1;
             if (dcount > MAX_VISIBLE_ITEMS) {
                 int scrollBarHeight = (MAX_VISIBLE_ITEMS * 10) * MAX_VISIBLE_ITEMS / dcount;
                 if (scrollBarHeight < 4) scrollBarHeight = 4;
                 int scrollBarY = 12 + (analyzeScrollIndex * (MAX_VISIBLE_ITEMS * 10)) / dcount;
-                if (scrollBarY > 12 + MAX_VISIBLE_ITEMS * 10 - scrollBarHeight) {
-                    scrollBarY = 12 + MAX_VISIBLE_ITEMS * 10 - scrollBarHeight;
-                }
+                if (scrollBarY > 12 + MAX_VISIBLE_ITEMS * 10 - scrollBarHeight) scrollBarY = 12 + MAX_VISIBLE_ITEMS * 10 - scrollBarHeight;
                 getDisplay().drawRect(124, 12, 4, MAX_VISIBLE_ITEMS * 10, SSD1306_WHITE);
                 getDisplay().fillRect(125, scrollBarY, 2, scrollBarHeight, SSD1306_WHITE);
             }
-
             for (int i = 0; i < MAX_VISIBLE_ITEMS && (analyzeScrollIndex + i) < dcount; i++) {
                 int idx = analyzeScrollIndex + i;
                 DetectedSignal* sig = nrf24GetDetected(idx);
                 if (sig && sig->active) {
                     char buf[20];
-                    if (idx == sel) {
-                        snprintf(buf, 20, ">CH%3d:%d", sig->channel, sig->rssi);
-                    } else {
-                        snprintf(buf, 20, " CH%3d:%d", sig->channel, sig->rssi);
-                    }
+                    if (idx == sel) snprintf(buf, 20, ">CH%3d:%d", sig->channel, sig->rssi);
+                    else snprintf(buf, 20, " CH%3d:%d", sig->channel, sig->rssi);
                     drawText(0, 12 + i * 10, buf, 1);
                 }
             }
-
             char countBuf[16];
             snprintf(countBuf, 16, "%d/%d", sel + 1, dcount);
             getDisplay().setTextSize(1);
@@ -529,9 +470,8 @@ void handleNRF24Analyze(ButtonState btn) {
         if (sel < dcount - 1) nrf24SetAnalyzeSelected(sel + 1);
     }
     if (btn == BTN_PRESSED_SELECT) {
-        if (dcount == 0) {
-            analyzed = false;
-        } else {
+        if (dcount == 0) analyzed = false;
+        else {
             previousMenu = currentMenu;
             currentMenu = MENU_NRF24_ANALYZE_DETAIL;
         }
@@ -555,25 +495,216 @@ void handleNRF24AnalyzeDetail(ButtonState btn) {
     }
 }
 
-// ============================================================
-// JAMMER HANDLER - SIMPLIFICADO (KILL ALL DIRETO)
-// ============================================================
 void handleNRF24Jammer(ButtonState btn) {
     if (!nrf24IsJammerActive()) {
-        if (btn == BTN_PRESSED_SELECT) {
-            nrf24StartJammer();
-        }
+        if (btn == BTN_PRESSED_SELECT) nrf24StartJammer();
     } else {
-        if (btn == BTN_PRESSED_SELECT || btn == BTN_PRESSED_BACK) {
-            nrf24StopJammer();
-        }
+        if (btn == BTN_PRESSED_SELECT || btn == BTN_PRESSED_BACK) nrf24StopJammer();
     }
 }
 
+// ============================================================
+// DEAUTH - EXATAMENTE IGUAL AO VÍDEO
+// ============================================================
+// Tela 1: Lista de redes WiFi (SSID + RSSI)
+// Tela 2: Network Details (SSID, Auth, Status, Pkts, Succ%)
+//         "Press RIGHT to Start" (botão SELECT)
+// Tela 3: Atacando (Status: Running, Pkts contando)
 
+void drawNetworkItem(int index, int y, bool selected) {
+    if (selected) {
+        getDisplay().fillRect(0, y, 128, 10, 1);
+        getDisplay().setTextColor(0);
+    } else {
+        getDisplay().setTextColor(1);
+    }
+    NetworkInfo* net = getNetwork(index);
+    if (net) {
+        char buf[32];
+        snprintf(buf, 32, "%s | RSSI %d", net->ssid, net->rssi);
+        drawText(4, y + 1, buf, 1);
+    }
+    if (selected) getDisplay().setTextColor(1);
+}
+
+// TELA DE DETALHES DO DEAUTH (igual ao vídeo)
+void renderDeauthDetail() {
+    clearDisplay();
+    drawMenuHeader("Network Details");
+
+    NetworkInfo* net = getNetwork(deauthSelectedNetwork);
+    if (!net) {
+        drawCenteredText(30, "Erro rede", 1);
+        updateDisplay();
+        return;
+    }
+
+    char buf[64];
+
+    // SSID
+    snprintf(buf, 64, "SSID: %s", net->ssid);
+    drawText(0, 12, buf, 1);
+
+    // Auth
+    snprintf(buf, 64, "Auth: %s", net->encrypted ? "WPA/WPA2" : "OPEN");
+    drawText(0, 22, buf, 1);
+
+    // Status
+    snprintf(buf, 64, "Status: %s", deauthActive ? "Running" : "Stopped");
+    drawText(0, 32, buf, 1);
+
+    // Pkts
+    snprintf(buf, 64, "Pkts: %lu", getDeauthPacketCount());
+    drawText(0, 42, buf, 1);
+
+    // Succ%
+    snprintf(buf, 64, "Succ: %d%%", getDeauthSuccessPercent());
+    drawText(64, 42, buf, 1);
+
+    // Instrução
+    if (!deauthActive) {
+        drawCenteredText(55, "Press RIGHT to Start", 1);
+    } else {
+        drawCenteredText(55, "SEL: Stop", 1);
+    }
+
+    updateDisplay();
+}
+
+void renderDeauth() {
+    // Se estiver na tela de detalhes
+    if (deauthDetailView) {
+        renderDeauthDetail();
+        return;
+    }
+
+    // Tela de lista de redes
+    if (!inListView) {
+        inListView = true;
+        listIndex = 0;
+        listMaxIndex = getNetworkCount() - 1;
+        if (listMaxIndex < 0) listMaxIndex = 0;
+        if (getNetworkCount() == 0) {
+            showLoading("Scanning WiFi...", 0);
+            scanNetworks();
+            listMaxIndex = getNetworkCount() - 1;
+            if (listMaxIndex < 0) listMaxIndex = 0;
+        }
+    }
+
+    if (getNetworkCount() == 0) {
+        clearDisplay();
+        drawMenuHeader("DEAUTH");
+        drawCenteredText(30, "No networks", 1);
+        updateDisplay();
+        return;
+    }
+
+    renderList("Wi-Fi Networks", getNetworkCount(), drawNetworkItem);
+}
+
+void handleDeauth(ButtonState btn) {
+    // Se estiver na tela de detalhes
+    if (deauthDetailView) {
+        if (btn == BTN_PRESSED_SELECT) {
+            if (!deauthActive) {
+                // START deauth
+                startDeauth(deauthSelectedNetwork);
+            } else {
+                // STOP deauth
+                stopDeauth();
+            }
+        }
+        if (btn == BTN_PRESSED_BACK) {
+            stopDeauth();
+            deauthDetailView = false;
+            deauthSelectedNetwork = -1;
+        }
+        return;
+    }
+
+    // Navegação na lista
+    if (btn == BTN_PRESSED_SELECT) {
+        if (listIndex >= 0 && listIndex < (int)getNetworkCount()) {
+            deauthSelectedNetwork = listIndex;
+            deauthDetailView = true;
+        }
+    }
+    if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
+    if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
+}
 
 // ============================================================
-// OUTROS HANDLERS E RENDERERS
+// PASSWORD / EVIL TWIN (mantido)
+// ============================================================
+void renderPassword() {
+    if (!inListView) {
+        inListView = true;
+        listIndex = 0;
+        listMaxIndex = getNetworkCount() - 1;
+        if (listMaxIndex < 0) listMaxIndex = 0;
+        if (getNetworkCount() == 0) {
+            showLoading("Escaneando...", 0);
+            scanNetworks();
+            listMaxIndex = getNetworkCount() - 1;
+            if (listMaxIndex < 0) listMaxIndex = 0;
+        }
+    }
+    if (getNetworkCount() == 0) {
+        clearDisplay();
+        drawMenuHeader("SENHA");
+        drawCenteredText(30, "Sem redes", 1);
+        updateDisplay();
+        return;
+    }
+    if (passwordCaptured) {
+        clearDisplay();
+        drawMenuHeader("SENHA!");
+        NetworkInfo* net = getNetwork(listIndex);
+        if (net) {
+            char buf[64];
+            snprintf(buf, 64, "Rede: %s", net->ssid);
+            drawText(0, 14, buf, 1);
+        }
+        char buf[64];
+        snprintf(buf, 64, "Pass: %s", capturedPassword);
+        drawText(0, 28, buf, 1);
+        drawCenteredText(50, "SEL: Nova", 1);
+        updateDisplay();
+    } else if (fakeAPEnabled) {
+        clearDisplay();
+        drawMenuHeader("AGUARDANDO...");
+        NetworkInfo* net = getNetwork(listIndex);
+        if (net) {
+            char buf[64];
+            snprintf(buf, 64, "Clone: %s", net->ssid);
+            drawText(0, 14, buf, 1);
+        }
+        drawCenteredText(35, "Aguardando vitima", 1);
+        drawCenteredText(48, "conectar...", 1);
+        updateDisplay();
+    } else {
+        renderList("CAPTURAR SENHA", getNetworkCount(), drawNetworkItem);
+    }
+}
+
+void handlePassword(ButtonState btn) {
+    if (btn == BTN_PRESSED_SELECT) {
+        if (!fakeAPEnabled && !passwordCaptured && listIndex < (int)getNetworkCount()) {
+            startEvilTwin(listIndex);
+        } else if (passwordCaptured) {
+            passwordCaptured = false;
+            stopFakeAP();
+        } else if (fakeAPEnabled) {
+            stopFakeAP();
+        }
+    }
+    if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
+    if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
+}
+
+// ============================================================
+// OUTROS RENDERERS (mantidos do original)
 // ============================================================
 void renderCC1101Copy() {
     clearDisplay();
@@ -628,109 +759,6 @@ void renderCC1101Replay() {
         return;
     }
     renderList("REPRODUZIR", cc1101GetSavedCount(), drawSignalItem);
-}
-
-void drawNetworkItem(int index, int y, bool selected) {
-    if (selected) {
-        getDisplay().fillRect(0, y, 128, 10, 1);
-        getDisplay().setTextColor(0);
-    } else {
-        getDisplay().setTextColor(1);
-    }
-    NetworkInfo* net = getNetwork(index);
-    if (net) {
-        char buf[32];
-        snprintf(buf, 32, "%s [%d]", net->ssid, net->rssi);
-        drawText(4, y + 1, buf, 1);
-    }
-    if (selected) getDisplay().setTextColor(1);
-}
-
-void renderDeauth() {
-    if (!inListView) {
-        inListView = true;
-        listIndex = 0;
-        listMaxIndex = getNetworkCount() - 1;
-        if (listMaxIndex < 0) listMaxIndex = 0;
-        if (getNetworkCount() == 0) {
-            showLoading("Escaneando...", 0);
-            scanNetworks();
-            listMaxIndex = getNetworkCount() - 1;
-            if (listMaxIndex < 0) listMaxIndex = 0;
-        }
-    }
-    if (getNetworkCount() == 0) {
-        clearDisplay();
-        drawMenuHeader("DEAUTH");
-        drawCenteredText(30, "Sem redes", 1);
-        updateDisplay();
-        return;
-    }
-    if (deauthActive) {
-        clearDisplay();
-        drawMenuHeader("DEAUTH");
-        NetworkInfo* net = getNetwork(listIndex);
-        if (net) {
-            char buf[64];
-            snprintf(buf, 64, "Desautenticando: %s", net->ssid);
-            drawText(0, 14, buf, 1);
-        }
-        drawCenteredText(50, "SEL: Parar", 1);
-        updateDisplay();
-    } else {
-        renderList("DEAUTH", getNetworkCount(), drawNetworkItem);
-    }
-}
-
-void renderPassword() {
-    if (!inListView) {
-        inListView = true;
-        listIndex = 0;
-        listMaxIndex = getNetworkCount() - 1;
-        if (listMaxIndex < 0) listMaxIndex = 0;
-        if (getNetworkCount() == 0) {
-            showLoading("Escaneando...", 0);
-            scanNetworks();
-            listMaxIndex = getNetworkCount() - 1;
-            if (listMaxIndex < 0) listMaxIndex = 0;
-        }
-    }
-    if (getNetworkCount() == 0) {
-        clearDisplay();
-        drawMenuHeader("SENHA");
-        drawCenteredText(30, "Sem redes", 1);
-        updateDisplay();
-        return;
-    }
-    if (passwordCaptured) {
-        clearDisplay();
-        drawMenuHeader("SENHA!");
-        NetworkInfo* net = getNetwork(listIndex);
-        if (net) {
-            char buf[64];
-            snprintf(buf, 64, "Rede: %s", net->ssid);
-            drawText(0, 14, buf, 1);
-        }
-        char buf[64];
-        snprintf(buf, 64, "Pass: %s", capturedPassword);
-        drawText(0, 28, buf, 1);
-        drawCenteredText(50, "SEL: Nova", 1);
-        updateDisplay();
-    } else if (fakeAPEnabled) {
-        clearDisplay();
-        drawMenuHeader("AGUARDANDO...");
-        NetworkInfo* net = getNetwork(listIndex);
-        if (net) {
-            char buf[64];
-            snprintf(buf, 64, "Clone: %s", net->ssid);
-            drawText(0, 14, buf, 1);
-        }
-        drawCenteredText(35, "Aguardando vitima", 1);
-        drawCenteredText(48, "conectar...", 1);
-        updateDisplay();
-    } else {
-        renderList("CAPTURAR SENHA", getNetworkCount(), drawNetworkItem);
-    }
 }
 
 void drawRemoteItem(int index, int y, bool selected) {
@@ -1016,30 +1044,6 @@ void handleCC1101Replay(ButtonState btn) {
     if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
 }
 
-void handleDeauth(ButtonState btn) {
-    if (btn == BTN_PRESSED_SELECT) {
-        if (!deauthActive && listIndex < (int)getNetworkCount()) startDeauth(listIndex);
-        else stopDeauth();
-    }
-    if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
-    if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
-}
-
-void handlePassword(ButtonState btn) {
-    if (btn == BTN_PRESSED_SELECT) {
-        if (!fakeAPEnabled && !passwordCaptured && listIndex < (int)getNetworkCount()) {
-            startEvilTwin(listIndex);
-        } else if (passwordCaptured) {
-            passwordCaptured = false;
-            stopFakeAP();
-        } else if (fakeAPEnabled) {
-            stopFakeAP();
-        }
-    }
-    if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
-    if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
-}
-
 void handleRemote(ButtonState btn) {
     if (btn == BTN_PRESSED_SELECT) {
         if (getRemoteDeviceCount() == 0) {
@@ -1147,6 +1151,11 @@ void menuInit() {
 
 void menuLoop() {
     ButtonState btn = readButtons();
+
+    // === DEAUTH LOOP: envia pacotes enquanto ativo ===
+    if (deauthActive) {
+        deauthLoop();
+    }
 
     switch (currentMenu) {
         case MENU_MAIN: case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS:
