@@ -53,22 +53,6 @@ static DetectedSignal jammerDetectedSignals[NRF_MAX_DETECTED];
 static uint8_t jammerDetectedCount = 0;
 static int8_t jammerSelectedIndex = 0;
 
-// ============================================================
-// REGISTRADORES
-// ============================================================
-#define REG_CONFIG      0x00
-#define REG_RF_CH       0x05
-#define REG_RF_SETUP    0x06
-
-static uint8_t readReg(uint8_t reg) {
-    uint8_t result;
-    digitalWrite(NRF_CSN, LOW);
-    SPI.transfer(0x00 | reg);
-    result = SPI.transfer(0xFF);
-    digitalWrite(NRF_CSN, HIGH);
-    return result;
-}
-
 static void hardResetNRF24() {
     digitalWrite(NRF_CE, LOW);
     delay(150);
@@ -279,7 +263,15 @@ void nrf24JammerSetSelectedIndex(int8_t idx) {
 }
 
 // ============================================================
-// JAMMER - KILL ALL / SELECT CH (FINAL)
+// JAMMER - KILL ALL / SELECT CH (VERSAO FINAL)
+// ============================================================
+//
+// ABORDAGEM:
+// - startConstCarrier() configura o chip com CONT_WAVE + payload dummy
+// - Para SELECT CH: CE HIGH fixo, canal nunca muda
+// - Para KILL ALL: CE LOW -> setChannel() -> CE HIGH a cada 400us
+//   Isso forca o chip a atualizar a frequencia do PLL no novo canal
+//
 // ============================================================
 
 void nrf24StartJammer() {
@@ -298,17 +290,20 @@ void nrf24StartJammer() {
 
     jamLastSwitch = 0;
 
-    // Inicia a portadora contínua
+    // Configura o chip com startConstCarrier (CONT_WAVE + payload dummy)
     radio.startConstCarrier(RF24_PA_MAX, jamChannel);
 
-    // FORÇAR CE HIGH para manter transmissão ativa
-    digitalWrite(NRF_CE, HIGH);
+    if (jamSelectMode) {
+        // SELECT CH: CE HIGH fixo, canal nunca muda
+        digitalWrite(NRF_CE, HIGH);
+    }
+    // KILL ALL: CE sera controlado no loop (LOW -> setChannel -> HIGH)
 }
 
 void nrf24StopJammer() {
     if (!nrf24JammerActive) return;
-    radio.stopConstCarrier();
     digitalWrite(NRF_CE, LOW);
+    radio.stopConstCarrier();
     radio.stopListening();
     radio.flush_tx();
     nrf24JammerActive = false;
@@ -322,7 +317,11 @@ int nrf24JammerLoop() {
     jamHistoryIndex = (jamHistoryIndex + 1) % 16;
 
     if (jamSelectMode) {
-        // === MODO SELECT CH: FIXO - NUNCA muda de canal ===
+        // === MODO SELECT CH: FIXO ===
+        // CE permanece HIGH (configurado no start)
+        // Canal nunca muda
+        // O chip retransmite o payload dummy no canal fixo
+
         for (int i = 0; i < 16; i++) {
             if (i == (jamChannel / 8)) {
                 jamHistory[i] = min(jamHistory[i] + 10, 40);
@@ -334,6 +333,22 @@ int nrf24JammerLoop() {
     }
 
     // === MODO KILL ALL: HOPPING ===
+    // Muda de canal o maximo possivel dentro do tempo disponivel
+    unsigned long now = micros();
+    while (now - jamLastSwitch >= 400) {
+        jamLastSwitch += 400;
+
+        // Forca o chip a sair de TX, mudar canal, e voltar para TX
+        // Isso garante que o PLL atualize a frequencia no novo canal
+        digitalWrite(NRF_CE, LOW);
+        radio.setChannel(jamChannel);
+        digitalWrite(NRF_CE, HIGH);
+
+        jamChannel++;
+        jamChannelPackets = 0;
+        if (jamChannel > 125) jamChannel = 0;
+    }
+
     int activeBar = (jamChannel / 8) % 16;
     for (int i = 0; i < 16; i++) {
         if (i == activeBar) {
@@ -341,14 +356,6 @@ int nrf24JammerLoop() {
         } else {
             jamHistory[i] = max(jamHistory[i] - 3, 2);
         }
-    }
-
-    if (micros() - jamLastSwitch >= 500) {
-        jamLastSwitch = micros();
-        jamChannel++;
-        jamChannelPackets = 0;
-        if (jamChannel > 125) jamChannel = 0;
-        radio.setChannel(jamChannel);
     }
 
     return jamChannel;
@@ -360,7 +367,7 @@ uint32_t nrf24GetJamTotalPackets() { return jamTotalPackets; }
 uint32_t nrf24GetJamChannelPackets() { return jamChannelPackets; }
 
 bool nrf24JammerIsSelectMode() { return jamSelectMode; }
-void nrf24JammerSetSelectMode(bool mode) { 
+void nrf24JammerSetSelectMode(bool mode) {
     jamSelectMode = mode;
 }
 int nrf24JammerGetSelectedChannel() { return jamSelectedChannel; }
@@ -371,6 +378,7 @@ void nrf24JammerSetSelectedChannel(int ch) {
     if (nrf24JammerActive && jamSelectMode) {
         jamChannel = ch;
         jamChannelPackets = 0;
+        digitalWrite(NRF_CE, LOW);
         radio.stopConstCarrier();
         delayMicroseconds(100);
         radio.startConstCarrier(RF24_PA_MAX, ch);
