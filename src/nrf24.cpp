@@ -50,6 +50,24 @@ static int scanBarIndex = 0;
 static SignalData nrfSavedSignals[MAX_SAVED_SIGNALS];
 static uint8_t nrfSavedCount = 0;
 
+// ============================================================
+// SCANNER SPECTRUM BARS - SCROLLING (barras deslizantes)
+// ============================================================
+#define SPEC_BARS         64    // 64 barras na tela
+#define SPEC_BAR_WIDTH    3     // 3px por barra
+#define SPEC_BAR_GAP      1     // 1px de gap
+#define SPEC_CHANNELS     125   // 125 canais NRF24
+#define SPEC_CH_PER_BAR   2     // 2 canais por barra
+#define SPEC_MAX_HEIGHT   80    // altura maxima mapeada
+
+static int8_t specBarValues[SPEC_BARS];    // Altura atual suavizada (ring buffer)
+static int8_t specBarTargets[SPEC_BARS];   // Target raw
+static int8_t specSelectedBar = 32;        // Barra selecionada (cursor)
+static int8_t specAnalysisChannel = 64;    // Canal em analise (independente)
+static bool specRunning = false;
+static uint32_t specFrames = 0;
+static int specWriteIndex = 0;             // Indice de escrita no ring buffer
+
 static void hardResetNRF24() {
     digitalWrite(NRF_CE, LOW);
     delay(150);
@@ -78,7 +96,7 @@ bool nrf24Init() {
 }
 
 // ============================================================
-// SCANNER - ONDAS EM TEMPO REAL + PACOTES
+// SCANNER - ONDAS EM TEMPO REAL + PACOTES (antigo, mantido)
 // ============================================================
 void nrf24StartScan() {
     scanning = true;
@@ -132,13 +150,11 @@ void nrf24ScanLoop() {
     radio.stopListening();
     scanHistory[scanIndex] = rssi;
 
-    // Atualiza dados das barras do grafico (agrupado por canal/8)
     int barIdx = (ch / 8) % 16;
     if (rssi > scanBarData[barIdx]) {
         scanBarData[barIdx] = rssi;
     }
 
-    // Decaimento gradual das barras a cada ciclo completo (125 canais)
     if (scanIndex % 125 == 0) {
         for (int i = 0; i < 16; i++) {
             if (scanBarData[i] > -100) scanBarData[i] -= 5;
@@ -159,7 +175,6 @@ void nrf24StartAnalyze() {
     analyzeSelectedIndex = 0;
     for (int i = 0; i < NRF_MAX_DETECTED; i++) detectedSignals[i].active = false;
 
-    // Varre todos os canais rapidamente - MULTIPLAS PASSADAS para garantir deteccao
     for (int pass = 0; pass < 3; pass++) {
         for (int ch = 0; ch < 125; ch++) {
             radio.setChannel(ch);
@@ -206,7 +221,6 @@ void nrf24SetAnalyzeSelected(uint8_t idx) {
     if (idx < detectedCount) analyzeSelectedIndex = idx;
 }
 
-// Grava sinal no slot de saved signals
 bool nrf24SaveSignal(uint8_t detectedIdx) {
     if (detectedIdx >= detectedCount) return false;
     if (nrfSavedCount >= MAX_SAVED_SIGNALS) return false;
@@ -228,76 +242,79 @@ SignalData* nrf24GetSavedSignal(uint8_t index) {
 }
 
 // ============================================================
-// SCANNER SPECTRUM BARS (estilo imagem - barras finas em tempo real)
+// SCANNER SPECTRUM BARS - SCROLLING (NOVO)
+// Barras deslizam da direita para esquerda
+// Sinal entra pela direita, historico empurra para esquerda
 // ============================================================
-#define SPEC_BARS         64    // 64 barras na tela
-#define SPEC_BAR_WIDTH    1     // 1px por barra
-#define SPEC_BAR_GAP      1     // 1px de gap
-#define SPEC_CHANNELS     125   // 125 canais NRF24
-#define SPEC_CH_PER_BAR   2     // 2 canais por barra
-
-static int8_t specBarValues[SPEC_BARS];    // Altura atual (suavizada)
-static int8_t specBarTargets[SPEC_BARS];   // Target (leitura real)
-static int8_t specSelectedBar = 0;         // Barra selecionada (cursor)
-static bool specRunning = false;
-static uint32_t specFrames = 0;
 
 void nrf24SpecInit() {
     specRunning = false;
     specFrames = 0;
-    specSelectedBar = 0;
+    specWriteIndex = 0;
+    specSelectedBar = 32;
+    specAnalysisChannel = 64;
     for (int i = 0; i < SPEC_BARS; i++) {
-        specBarValues[i] = -100;
-        specBarTargets[i] = -100;
+        specBarValues[i] = 2;
+        specBarTargets[i] = 2;
     }
+}
+
+// Le um canal especifico e retorna altura mapeada (0-80)
+static int8_t readChannelRSSI(int ch) {
+    radio.setChannel(ch);
+    radio.startListening();
+    delayMicroseconds(120);
+
+    bool rpd = radio.testRPD();
+    bool carrier = radio.testCarrier();
+    radio.stopListening();
+
+    int rssi = -100;
+    if (rpd) rssi = -55 - random(15);
+    else if (carrier) rssi = -72 - random(10);
+
+    // Canal em analise tem sinal mais forte (simula foco)
+    if (ch == specAnalysisChannel) {
+        rssi += 25 + random(15);
+    } else if (abs(ch - specAnalysisChannel) <= 2) {
+        rssi += 12 + random(8);
+    }
+
+    // Mapeia RSSI (-100 a 0) para altura (2 a 80)
+    int h = map(rssi, -100, -30, 2, SPEC_MAX_HEIGHT);
+    if (h < 2) h = 2;
+    if (h > SPEC_MAX_HEIGHT) h = SPEC_MAX_HEIGHT;
+    return (int8_t)h;
+}
+
+// Suavizacao VU-meter: sobe rapido, desce lento
+static int8_t smoothBarValue(int8_t current, int8_t target) {
+    int diff = target - current;
+    if (diff > 0) {
+        current += max(diff * 2 / 3, 3);
+        if (current > target) current = target;
+    } else if (diff < 0) {
+        current += min(diff / 6, -1);
+        if (current < target) current = target;
+    }
+    if (current < 2) current = 2;
+    if (current > SPEC_MAX_HEIGHT) current = SPEC_MAX_HEIGHT;
+    return current;
 }
 
 void nrf24SpecScan() {
     if (!specRunning) return;
 
-    // Varre todos os canais e agrupa em 64 barras
-    for (int bar = 0; bar < SPEC_BARS; bar++) {
-        int bestRssi = -100;
-        int startCh = bar * SPEC_CH_PER_BAR;
-        int endCh = startCh + SPEC_CH_PER_BAR;
-        if (endCh > SPEC_CHANNELS) endCh = SPEC_CHANNELS;
+    // Varre um canal por vez (ciclo 0-124)
+    int ch = specFrames % 125;
+    int barIdx = ch / SPEC_CH_PER_BAR;
+    if (barIdx >= SPEC_BARS) barIdx = SPEC_BARS - 1;
 
-        for (int ch = startCh; ch < endCh; ch++) {
-            radio.setChannel(ch);
-            radio.startListening();
-            delayMicroseconds(120);
+    int8_t rawVal = readChannelRSSI(ch);
 
-            bool rpd = radio.testRPD();
-            bool carrier = radio.testCarrier();
-            radio.stopListening();
-
-            int rssi = -100;
-            if (rpd) rssi = -55 - random(15);
-            else if (carrier) rssi = -72 - random(10);
-
-            if (rssi > bestRssi) bestRssi = rssi;
-        }
-
-        specBarTargets[bar] = bestRssi;
-    }
-
-    // Suavização: sobe rápido, desce lento (vu-meter)
-    for (int i = 0; i < SPEC_BARS; i++) {
-        int diff = specBarTargets[i] - specBarValues[i];
-        if (diff > 0) {
-            // Sobe rápido
-            specBarValues[i] += max(diff * 2 / 3, 3);
-            if (specBarValues[i] > specBarTargets[i]) 
-                specBarValues[i] = specBarTargets[i];
-        } else if (diff < 0) {
-            // Desce devagar
-            specBarValues[i] += min(diff / 6, -1);
-            if (specBarValues[i] < specBarTargets[i])
-                specBarValues[i] = specBarTargets[i];
-        }
-        if (specBarValues[i] < -100) specBarValues[i] = -100;
-        if (specBarValues[i] > 0) specBarValues[i] = 0;
-    }
+    // Coloca no ring buffer (mais recente = writeIndex)
+    specBarValues[specWriteIndex] = smoothBarValue(specBarValues[specWriteIndex], rawVal);
+    specWriteIndex = (specWriteIndex + 1) % SPEC_BARS;
 
     specFrames++;
 }
@@ -319,116 +336,45 @@ void nrf24SpecStop() {
 
 bool nrf24SpecIsRunning() { return specRunning; }
 uint32_t nrf24SpecGetFrames() { return specFrames; }
-const int8_t* nrf24SpecGetBars() { return specBarValues; }
+
+// Retorna o valor de uma barra para desenho
+// displayIdx 0 = esquerda (mais antigo), 63 = direita (mais recente)
+int8_t nrf24SpecGetBarValue(int displayIdx) {
+    if (displayIdx < 0 || displayIdx >= SPEC_BARS) return 2;
+    int ringIdx = (specWriteIndex + displayIdx) % SPEC_BARS;
+    return specBarValues[ringIdx];
+}
+
 int8_t nrf24SpecGetSelectedBar() { return specSelectedBar; }
 void nrf24SpecSetSelectedBar(int8_t bar) {
-    if (bar >= 0 && bar < SPEC_BARS) specSelectedBar = bar;
+    if (bar >= 0 && bar < SPEC_BARS) {
+        specSelectedBar = bar;
+        specAnalysisChannel = bar * SPEC_CH_PER_BAR;
+    }
 }
+
+int8_t nrf24SpecGetAnalysisChannel() { return specAnalysisChannel; }
+void nrf24SpecSetAnalysisChannel(int8_t ch) {
+    if (ch >= 0 && ch < 125) {
+        specAnalysisChannel = ch;
+        specSelectedBar = ch / SPEC_CH_PER_BAR;
+    }
+}
+
 int8_t nrf24SpecGetBarChannel(int8_t bar) {
     if (bar < 0 || bar >= SPEC_BARS) return -1;
     return bar * SPEC_CH_PER_BAR;
 }
 
 // ============================================================
-// SCANNER SPECTRUM BARS (estilo vídeo - barras verticais)
+// SCANNER WATERFALL (estilo video - spectrogram)
 // ============================================================
-#define SPECTRUM_BARS     16    // 16 barras na tela
-#define SPECTRUM_CHANNELS 125   // 125 canais NRF24
-#define BAR_WIDTH         7     // 7px por barra (16*7=112, sobra espaço)
-#define BAR_GAP           1     // 1px de gap
+#define WATERFALL_WIDTH   128
+#define WATERFALL_HEIGHT  50
+#define WATERFALL_CHANNELS 125
 
-static int8_t spectrumBarValues[SPECTRUM_BARS];   // Altura atual de cada barra
-static int8_t spectrumBarTargets[SPECTRUM_BARS];  // Target (RSSI real)
-static bool spectrumRunning = false;
-static uint32_t spectrumFrames = 0;
-
-void nrf24SpectrumInit() {
-    spectrumRunning = false;
-    spectrumFrames = 0;
-    for (int i = 0; i < SPECTRUM_BARS; i++) {
-        spectrumBarValues[i] = 0;
-        spectrumBarTargets[i] = 0;
-    }
-}
-
-void nrf24SpectrumScan() {
-    if (!spectrumRunning) return;
-
-    // Varre todos os canais e agrupa em 16 barras
-    // Cada barra = ~8 canais (125/16 ≈ 8)
-    int chPerBar = SPECTRUM_CHANNELS / SPECTRUM_BARS;  // 7 ou 8
-
-    for (int bar = 0; bar < SPECTRUM_BARS; bar++) {
-        int bestRssi = -100;
-        int startCh = bar * chPerBar;
-        int endCh = startCh + chPerBar;
-        if (endCh > SPECTRUM_CHANNELS) endCh = SPECTRUM_CHANNELS;
-
-        for (int ch = startCh; ch < endCh; ch++) {
-            radio.setChannel(ch);
-            radio.startListening();
-            delayMicroseconds(200);
-
-            bool rpd = radio.testRPD();
-            bool carrier = radio.testCarrier();
-            radio.stopListening();
-
-            int rssi = -100;
-            if (rpd) rssi = -60 - random(15);
-            else if (carrier) rssi = -75 - random(10);
-
-            if (rssi > bestRssi) bestRssi = rssi;
-        }
-
-        spectrumBarTargets[bar] = bestRssi;
-    }
-
-    // Suavização: as barras sobem/descem gradualmente
-    for (int i = 0; i < SPECTRUM_BARS; i++) {
-        int diff = spectrumBarTargets[i] - spectrumBarValues[i];
-        if (diff > 0) {
-            spectrumBarValues[i] += max(diff / 3, 2);  // Sobe rápido
-        } else if (diff < 0) {
-            spectrumBarValues[i] += min(diff / 4, -1); // Desce lento
-        }
-        if (spectrumBarValues[i] < -100) spectrumBarValues[i] = -100;
-        if (spectrumBarValues[i] > 0) spectrumBarValues[i] = 0;
-    }
-
-    spectrumFrames++;
-}
-
-void nrf24SpectrumStart() {
-    spectrumRunning = true;
-    nrf24SpectrumInit();
-    radio.setAutoAck(false);
-    radio.setRetries(0, 0);
-    radio.setCRCLength(RF24_CRC_DISABLED);
-    radio.setPALevel(RF24_PA_MAX, true);
-    radio.setDataRate(RF24_2MBPS);
-}
-
-void nrf24SpectrumStop() {
-    spectrumRunning = false;
-    radio.stopListening();
-}
-
-bool nrf24SpectrumIsRunning() { return spectrumRunning; }
-uint32_t nrf24SpectrumGetFrames() { return spectrumFrames; }
-const int8_t* nrf24SpectrumGetBars() { return spectrumBarValues; }
-
-// ============================================================
-// SCANNER WATERFALL (estilo vídeo - spectrogram)
-// ============================================================
-#define WATERFALL_WIDTH   128   // Largura da tela
-#define WATERFALL_HEIGHT  50    // Altura do gráfico (linhas de histórico)
-#define WATERFALL_CHANNELS 125  // Canais NRF24
-
-// Buffer do waterfall: cada linha = snapshot de 125 canais
-// Usamos apenas 1 bit por canal (ativo/inativo) para economizar RAM
-// 125 canais / 8 = 16 bytes por linha
-static uint8_t waterfallBuffer[WATERFALL_HEIGHT][16];  // 50 * 16 = 800 bytes
-static int waterfallHead = 0;   // Índice da linha mais recente
+static uint8_t waterfallBuffer[WATERFALL_HEIGHT][16];
+static int waterfallHead = 0;
 static bool waterfallRunning = false;
 static uint32_t waterfallTotalFrames = 0;
 
@@ -445,27 +391,19 @@ void nrf24WaterfallInit() {
 
 void nrf24WaterfallScan() {
     if (!waterfallRunning) return;
-
-    // Cria nova linha de snapshot
     uint8_t newLine[16] = {0};
-
-    // Varre todos os 125 canais rapidamente
     for (int ch = 0; ch < WATERFALL_CHANNELS; ch++) {
         radio.setChannel(ch);
         radio.startListening();
         delayMicroseconds(150);
-
         bool active = radio.testRPD() || radio.testCarrier();
         radio.stopListening();
-
         if (active) {
             int byteIdx = ch / 8;
             int bitIdx = ch % 8;
             newLine[byteIdx] |= (1 << bitIdx);
         }
     }
-
-    // Adiciona nova linha no topo (empurra histórico para baixo)
     waterfallHead = (waterfallHead + 1) % WATERFALL_HEIGHT;
     memcpy(waterfallBuffer[waterfallHead], newLine, 16);
     waterfallTotalFrames++;
@@ -488,26 +426,17 @@ void nrf24WaterfallStop() {
 bool nrf24WaterfallIsRunning() { return waterfallRunning; }
 uint32_t nrf24WaterfallGetFrames() { return waterfallTotalFrames; }
 
-// Retorna ponteiro para o buffer (para o menu desenhar)
-// A linha 0 = mais antiga, linha WATERFALL_HEIGHT-1 = mais recente
-// Mas como é circular, precisamos reorganizar
 void nrf24WaterfallGetLine(int lineIndex, uint8_t* outLine) {
     if (lineIndex < 0 || lineIndex >= WATERFALL_HEIGHT) return;
-    // Calcula índice real no buffer circular
-    // waterfallHead = linha mais recente (topo do gráfico)
-    // Queremos: lineIndex 0 = topo (mais recente), lineIndex 49 = fundo (mais antigo)
     int realIdx = (waterfallHead - lineIndex + WATERFALL_HEIGHT) % WATERFALL_HEIGHT;
     memcpy(outLine, waterfallBuffer[realIdx], 16);
 }
 
 // ============================================================
-// JAMMER - KILL ALL OTIMIZADO (SEM MODO SELECT)
+// JAMMER - KILL ALL OTIMIZADO
 // ============================================================
-// Switch de canal a cada 50us (mais rapido que 500us anterior)
-// Usa const carrier para saturacao maxima
-
-#define JAM_SWITCH_INTERVAL_US  50   // 50 microssegundos por canal (antes era 500)
-#define JAM_BURST_PACKETS       2    // 2 pacotes por canal por switch
+#define JAM_SWITCH_INTERVAL_US  50
+#define JAM_BURST_PACKETS       2
 
 void nrf24StartJammer() {
     if (nrf24JammerActive) return;
@@ -517,9 +446,7 @@ void nrf24StartJammer() {
     jamHistoryIndex = 0;
     jamChannel = 0;
     jamLastSwitch = 0;
-
     for (int i = 0; i < 16; i++) jamHistory[i] = 0;
-
     radio.setAutoAck(false);
     radio.stopListening();
     radio.setRetries(0, 0);
@@ -540,25 +467,16 @@ void nrf24StopJammer() {
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
-
     jamTotalPackets++;
     jamChannelPackets++;
-
-    // Atualiza o histórico de barras com base na atividade real do jammer
-    // Cada barra representa um grupo de ~8 canais (125/16 ≈ 8)
     int activeBar = (jamChannel / 8) % 16;
-
     for (int i = 0; i < 16; i++) {
         if (i == activeBar) {
-            // Barra ativa: sobe rapidamente (saturação)
             jamHistory[i] = min(jamHistory[i] + 20, 50);
         } else {
-            // Barras inativas: decaem lentamente
             jamHistory[i] = max(jamHistory[i] - 2, 2);
         }
     }
-
-    // Switch ultra-rápido de canal a cada 50us
     unsigned long now = micros();
     if (now - jamLastSwitch >= JAM_SWITCH_INTERVAL_US) {
         jamLastSwitch = now;
@@ -567,12 +485,10 @@ int nrf24JammerLoop() {
         if (jamChannel > 125) jamChannel = 0;
         radio.setChannel(jamChannel);
     }
-
     return jamChannel;
 }
 
 const int8_t* nrf24GetJamHistory() { return jamHistory; }
-
 uint32_t nrf24GetJamTotalPackets() { return jamTotalPackets; }
 uint32_t nrf24GetJamChannelPackets() { return jamChannelPackets; }
 
