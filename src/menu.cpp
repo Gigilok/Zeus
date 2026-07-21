@@ -246,7 +246,6 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int maxHeight, const int8_t* data) {
     for (int i = 0; i < barCount; i++) {
         int8_t val = data[i];
-        // Mapeia valor para altura (0 a maxHeight)
         int h = map(val, 0, 45, 2, maxHeight);
         if (h < 2) h = 2;
         if (h > maxHeight) h = maxHeight;
@@ -254,41 +253,34 @@ void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int ma
         int y = startY - h;
         getDisplay().fillRect(x, y, barWidth - 1, h, SSD1306_WHITE);
     }
-    // Linha base
     getDisplay().drawLine(startX, startY, startX + barCount * barWidth, startY, SSD1306_WHITE);
 }
 
 // ============================================================
 // JAMMER - CORRIGIDO
 // ============================================================
-// Estado do jammer: 0 = tela de seleção (KILL ALL / SELECT CH)
-//                   1 = tela de escolha de canal (SELECT CH)
-// Usamos nrf24JammerIsSelectMode() como única fonte de verdade
+// Estado: 0 = tela de escolha (KILL ALL / SELECT CH)
+//         1 = tela de escolha de canal (SELECT CH)
+//         2 = jammer ativo
+
+static int jammerScreenState = 0; // 0 = menu, 1 = select channel, 2 = running
+static int jammerMenuOption = 0;  // 0 = KILL ALL, 1 = SELECT CH
 
 void renderNRF24Jammer() {
     clearDisplay();
     drawMenuHeader("JAM");
 
     if (!nrf24IsJammerActive()) {
-        if (!nrf24JammerIsSelectMode()) {
-            // === TELA 1: Seleção KILL ALL / SELECT CH ===
-            // Usamos jamSelectedChannel como índice: 0 = KILL ALL, 1 = SELECT CH
-            int option = nrf24JammerGetSelectedChannel() == 0 ? 0 : 1;
-            // Na verdade, vamos usar uma abordagem diferente
-            // Quando em select mode = false, o canal selecionado é 0 (KILL ALL) ou outro valor
-            // Vamos simplificar: usamos uma variável local para a opção da tela inicial
-
-            // Opção 0 = KILL ALL, Opção 1 = SELECT CH
-            static int jamMenuOption = 0;
-
-            if (jamMenuOption == 0) {
+        if (jammerScreenState == 0) {
+            // === TELA 1: Selecao KILL ALL / SELECT CH ===
+            if (jammerMenuOption == 0) {
                 drawCenteredText(24, "> KILL ALL", 1);
                 drawCenteredText(40, "  SELECT CH", 1);
             } else {
                 drawCenteredText(24, "  KILL ALL", 1);
                 drawCenteredText(40, "> SELECT CH", 1);
             }
-        } else {
+        } else if (jammerScreenState == 1) {
             // === TELA 2: Escolha do canal (SELECT CH) ===
             char buf[32];
             snprintf(buf, 32, "CANAL: %d", nrf24JammerGetSelectedChannel());
@@ -304,14 +296,12 @@ void renderNRF24Jammer() {
         const int8_t* jamData = nrf24GetJamHistory();
 
         if (nrf24JammerIsSelectMode()) {
-            // SELECT CH ativo: grafico do canal fixo
             char buf[32];
             snprintf(buf, 32, "CH%d Pkts:%lu", ch, nrf24GetJamChannelPackets());
             drawCenteredText(10, buf, 1);
             drawRealSpectrum(0, 62, 8, 16, 40, jamData);
             drawCenteredText(56, "SEL: Parar", 1);
         } else {
-            // KILL ALL ativo: grafico varrendo + contador
             char buf[32];
             snprintf(buf, 32, "Pkts: %lu", pkts);
             drawCenteredText(12, buf, 1);
@@ -341,7 +331,7 @@ void renderNRF24Scanner() {
         getDisplay().setCursor(90, 2);
         getDisplay().print(pktBuf);
 
-        // Grafico REAL de barras na mesma posicao do jammer (y=62 base)
+        // Grafico REAL de barras
         const int8_t* barData = nrf24GetScanBarData();
         drawRealSpectrum(0, 62, 8, 16, 40, barData);
 
@@ -371,7 +361,6 @@ void renderNRF24Scanner() {
 // ============================================================
 // ANALYZER - CORRIGIDO COM SCROLL
 // ============================================================
-// Índice de scroll para o analyzer
 static int8_t analyzeScrollIndex = 0;
 
 void renderNRF24Analyze() {
@@ -388,11 +377,8 @@ void renderNRF24Analyze() {
             drawCenteredText(56, "SEL: Re-escanear", 1);
         } else {
             uint8_t sel = nrf24GetAnalyzeSelected();
-
-            // Número máximo de itens visíveis na tela
             const int MAX_VISIBLE_ITEMS = 5;
 
-            // Ajusta o scroll para garantir que o item selecionado esteja visível
             if (sel < analyzeScrollIndex) {
                 analyzeScrollIndex = sel;
             }
@@ -400,7 +386,6 @@ void renderNRF24Analyze() {
                 analyzeScrollIndex = sel - MAX_VISIBLE_ITEMS + 1;
             }
 
-            // Mostra barra de scroll se necessário
             if (dcount > MAX_VISIBLE_ITEMS) {
                 int scrollBarHeight = (MAX_VISIBLE_ITEMS * 10) * MAX_VISIBLE_ITEMS / dcount;
                 if (scrollBarHeight < 4) scrollBarHeight = 4;
@@ -412,7 +397,6 @@ void renderNRF24Analyze() {
                 getDisplay().fillRect(125, scrollBarY, 2, scrollBarHeight, SSD1306_WHITE);
             }
 
-            // Renderiza os itens visíveis
             for (int i = 0; i < MAX_VISIBLE_ITEMS && (analyzeScrollIndex + i) < dcount; i++) {
                 int idx = analyzeScrollIndex + i;
                 DetectedSignal* sig = nrf24GetDetected(idx);
@@ -427,7 +411,6 @@ void renderNRF24Analyze() {
                 }
             }
 
-            // Mostra contador no rodapé
             char countBuf[16];
             snprintf(countBuf, 16, "%d/%d", sel + 1, dcount);
             getDisplay().setTextSize(1);
@@ -464,7 +447,7 @@ void handleNRF24Analyze(ButtonState btn) {
     if (!analyzed) {
         nrf24StartAnalyze();
         analyzed = true;
-        analyzeScrollIndex = 0; // Reset scroll
+        analyzeScrollIndex = 0;
     }
     uint8_t dcount = nrf24GetDetectedCount();
     if (btn == BTN_PRESSED_UP) {
@@ -477,7 +460,6 @@ void handleNRF24Analyze(ButtonState btn) {
     }
     if (btn == BTN_PRESSED_SELECT) {
         if (dcount == 0) {
-            // Re-escanear se nenhum sinal encontrado
             analyzed = false;
         } else {
             previousMenu = currentMenu;
@@ -506,29 +488,27 @@ void handleNRF24AnalyzeDetail(ButtonState btn) {
 // ============================================================
 // JAMMER HANDLER - CORRIGIDO
 // ============================================================
-// Variável local para controlar a opção na tela inicial do jammer
-// 0 = KILL ALL, 1 = SELECT CH
-static int jammerMenuOption = 0;
-
 void handleNRF24Jammer(ButtonState btn) {
     if (!nrf24IsJammerActive()) {
-        if (!nrf24JammerIsSelectMode()) {
-            // === TELA 1: Seleção KILL ALL / SELECT CH ===
+        if (jammerScreenState == 0) {
+            // === TELA 1: Selecao KILL ALL / SELECT CH ===
             if (btn == BTN_PRESSED_UP || btn == BTN_PRESSED_DOWN) {
                 jammerMenuOption = !jammerMenuOption;
             }
             if (btn == BTN_PRESSED_SELECT) {
                 if (jammerMenuOption == 1) {
-                    // Usuario selecionou SELECT CH: ativa o modo select
+                    // SELECT CH: vai para tela de escolha de canal
+                    jammerScreenState = 1;
                     nrf24JammerSetSelectMode(true);
-                    nrf24JammerSetSelectedChannel(0); // Começa no canal 0
+                    nrf24JammerSetSelectedChannel(0);
                 } else {
-                    // KILL ALL: inicia jammer imediatamente
+                    // KILL ALL: inicia jammer imediatamente (SEM escolha de canal)
+                    jammerScreenState = 2;
                     nrf24JammerSetSelectMode(false);
                     nrf24StartJammer();
                 }
             }
-        } else {
+        } else if (jammerScreenState == 1) {
             // === TELA 2: Escolha do canal (SELECT CH) ===
             if (btn == BTN_PRESSED_UP) {
                 int ch = nrf24JammerGetSelectedChannel();
@@ -540,23 +520,24 @@ void handleNRF24Jammer(ButtonState btn) {
             }
             if (btn == BTN_PRESSED_SELECT) {
                 // Inicia jammer FIXO no canal selecionado
+                jammerScreenState = 2;
                 nrf24StartJammer();
             }
             if (btn == BTN_PRESSED_BACK) {
-                // Volta para tela de seleção KILL ALL/SELECT CH
-                nrf24JammerSetSelectMode(false);
+                // Volta para tela de selecao KILL ALL/SELECT CH
+                jammerScreenState = 0;
                 jammerMenuOption = 0;
+                nrf24JammerSetSelectMode(false);
             }
         }
     } else {
         // === JAMMER ATIVO ===
         nrf24JammerLoop();
-
-        // SELECT ou BACK para parar
         if (btn == BTN_PRESSED_SELECT || btn == BTN_PRESSED_BACK) {
             nrf24StopJammer();
-            nrf24JammerSetSelectMode(false);
+            jammerScreenState = 0;
             jammerMenuOption = 0;
+            nrf24JammerSetSelectMode(false);
         }
     }
 }
@@ -565,7 +546,6 @@ void handleNRF24Scanner(ButtonState btn) {
     if (!nrf24IsScanning()) {
         nrf24StartScan();
     }
-    // nrf24ScanLoop() agora é chamado dentro de renderNRF24Scanner()
     if (btn == BTN_PRESSED_BACK) {
         nrf24StopScan();
         goBack();
@@ -573,7 +553,7 @@ void handleNRF24Scanner(ButtonState btn) {
 }
 
 // ============================================================
-// OUTROS HANDLERS E RENDERERS (mantidos do original)
+// OUTROS HANDLERS E RENDERERS
 // ============================================================
 void renderCC1101Copy() {
     clearDisplay();
@@ -995,7 +975,7 @@ void renderSettingsConnection() {
 }
 
 // ============================================================
-// INPUT HANDLERS (mantidos do original)
+// INPUT HANDLERS
 // ============================================================
 void handleCC1101Copy(ButtonState btn) {
     if (btn == BTN_PRESSED_SELECT && !capturing) {
