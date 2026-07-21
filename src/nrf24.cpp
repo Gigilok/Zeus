@@ -13,14 +13,14 @@ struct NRFDevice {
 NRFDevice nrfDevices[20];
 uint8_t nrfDeviceCount = 0;
 
-// Scanner - ondas em tempo real
+// Scanner
 static int8_t scanHistory[NRF_SCAN_HISTORY];
 static int scanIndex = 0;
 static bool scanning = false;
 static unsigned long scanLastUpdate = 0;
 static uint32_t scanTotalPackets = 0;
 
-// Analyzer - sinais detectados
+// Analyzer
 struct DetectedSignal {
     uint8_t channel;
     int8_t rssi;
@@ -39,44 +39,26 @@ static bool jamSelectMode = false;
 static int jamSelectedChannel = 0;
 static uint32_t jamTotalPackets = 0;
 static uint32_t jamChannelPackets = 0;
-
-// Jammer SELECT CH - dados do grafico em tempo real
 static int8_t jamHistory[16];
 static int jamHistoryIndex = 0;
-
-// Scanner - dados do grafico em tempo real
 static int8_t scanBarData[16];
 static int scanBarIndex = 0;
 
-// Saved signals para replay
+// Saved signals
 static SignalData nrfSavedSignals[MAX_SAVED_SIGNALS];
 static uint8_t nrfSavedCount = 0;
 
-// ============================================================
-// JAMMER SELECT CH - Canais detectados para escolha
-// ============================================================
+// Jammer SELECT CH
 static DetectedSignal jammerDetectedSignals[NRF_MAX_DETECTED];
 static uint8_t jammerDetectedCount = 0;
 static int8_t jammerSelectedIndex = 0;
 
 // ============================================================
-// FUNCOES DE DEBUG DOS REGISTRADORES
+// REGISTRADORES
 // ============================================================
 #define REG_CONFIG      0x00
-#define REG_EN_AA       0x01
-#define REG_EN_RXADDR   0x02
-#define REG_SETUP_AW    0x03
-#define REG_SETUP_RETR  0x04
 #define REG_RF_CH       0x05
 #define REG_RF_SETUP    0x06
-#define REG_STATUS      0x07
-#define REG_OBSERVE_TX  0x08
-#define REG_CD          0x09
-#define REG_RX_ADDR_P0  0x0A
-#define REG_TX_ADDR     0x10
-#define REG_FIFO_STATUS 0x17
-#define REG_DYNPD       0x1C
-#define REG_FEATURE     0x1D
 
 static uint8_t readReg(uint8_t reg) {
     uint8_t result;
@@ -85,24 +67,6 @@ static uint8_t readReg(uint8_t reg) {
     result = SPI.transfer(0xFF);
     digitalWrite(NRF_CSN, HIGH);
     return result;
-}
-
-static void printAllRegisters() {
-    Serial.println("  === REGISTRADORES NRF24 ===");
-    Serial.print("  CONFIG     (0x00): 0x"); Serial.println(readReg(REG_CONFIG), HEX);
-    Serial.print("  EN_AA      (0x01): 0x"); Serial.println(readReg(REG_EN_AA), HEX);
-    Serial.print("  EN_RXADDR  (0x02): 0x"); Serial.println(readReg(REG_EN_RXADDR), HEX);
-    Serial.print("  SETUP_AW   (0x03): 0x"); Serial.println(readReg(REG_SETUP_AW), HEX);
-    Serial.print("  SETUP_RETR (0x04): 0x"); Serial.println(readReg(REG_SETUP_RETR), HEX);
-    Serial.print("  RF_CH      (0x05): 0x"); Serial.println(readReg(REG_RF_CH), HEX);
-    Serial.print("  RF_SETUP   (0x06): 0x"); Serial.println(readReg(REG_RF_SETUP), HEX);
-    Serial.print("  STATUS     (0x07): 0x"); Serial.println(readReg(REG_STATUS), HEX);
-    Serial.print("  OBSERVE_TX (0x08): 0x"); Serial.println(readReg(REG_OBSERVE_TX), HEX);
-    Serial.print("  CD         (0x09): 0x"); Serial.println(readReg(REG_CD), HEX);
-    Serial.print("  FIFO_STATUS(0x17): 0x"); Serial.println(readReg(REG_FIFO_STATUS), HEX);
-    Serial.print("  DYNPD      (0x1C): 0x"); Serial.println(readReg(REG_DYNPD), HEX);
-    Serial.print("  FEATURE    (0x1D): 0x"); Serial.println(readReg(REG_FEATURE), HEX);
-    Serial.println("  ============================");
 }
 
 static void hardResetNRF24() {
@@ -119,30 +83,21 @@ static void hardResetNRF24() {
 }
 
 bool nrf24Init() {
-    Serial.println("[NRF24] nrf24Init() chamado");
     pinMode(NRF_CE, OUTPUT);
     pinMode(NRF_CSN, OUTPUT);
     digitalWrite(NRF_CSN, HIGH);
     hardResetNRF24();
-    if (!radio.begin()) {
-        Serial.println("[NRF24] ERRO: radio.begin() falhou!");
-        return false;
-    }
-    Serial.println("[NRF24] radio.begin() OK");
+    if (!radio.begin()) return false;
     radio.setPALevel(RF24_PA_MAX, true);
     radio.setDataRate(RF24_2MBPS);
     radio.setAutoAck(false);
     radio.disableCRC();
     radio.stopListening();
-    Serial.print("[NRF24] isChipConnected=");
-    Serial.println(radio.isChipConnected() ? "SIM" : "NAO");
-    Serial.print("[NRF24] isPVariant=");
-    Serial.println(radio.isPVariant() ? "SIM" : "NAO");
     return true;
 }
 
 // ============================================================
-// SCANNER - ONDAS EM TEMPO REAL + PACOTES
+// SCANNER
 // ============================================================
 void nrf24StartScan() {
     scanning = true;
@@ -203,7 +158,7 @@ void nrf24ScanLoop() {
 }
 
 // ============================================================
-// ANALYZER - LISTA CANAIS + DETALHES + GRAVAR
+// ANALYZER
 // ============================================================
 void nrf24StartAnalyze() {
     analyzing = true;
@@ -275,7 +230,7 @@ SignalData* nrf24GetSavedSignal(uint8_t index) {
 }
 
 // ============================================================
-// JAMMER SELECT CH - Scan rapido de canais
+// JAMMER SCAN
 // ============================================================
 void nrf24JammerScanChannels() {
     jammerDetectedCount = 0;
@@ -324,36 +279,11 @@ void nrf24JammerSetSelectedIndex(int8_t idx) {
 }
 
 // ============================================================
-// JAMMER - KILL ALL / SELECT CH  (CORRIGIDO - CE HIGH MANUAL)
-// ============================================================
-//
-// PROBLEMA ENCONTRADO NOS LOGS:
-// - startConstCarrier() para chips P variant faz:
-//   1. CE HIGH por 1ms
-//   2. CE LOW
-//   3. reUseTX() -> CE HIGH por 10us, depois CE LOW
-// - Mas TX FIFO está VAZIO (TX_EMPTY=1), então reUseTX() não funciona
-// - Resultado: CE fica LOW, chip não transmite!
-//
-// SOLUÇÃO:
-// - Após startConstCarrier(), forçar CE HIGH manualmente
-// - Manter CE HIGH durante todo o jamming
-// - CONT_WAVE bit no RF_SETUP faz o chip emitir portadora contínua em modo TX
-// - setChannel() muda o canal mantendo a transmissão ativa
-//
+// JAMMER - KILL ALL / SELECT CH (FINAL)
 // ============================================================
 
 void nrf24StartJammer() {
-    Serial.println("");
-    Serial.println("========================================");
-    Serial.println("[NRF24] nrf24StartJammer() CHAMADO");
-    Serial.println("========================================");
-
-    if (nrf24JammerActive) {
-        Serial.println("[NRF24] JA ESTAVA ATIVO! Retornando.");
-        return;
-    }
-
+    if (nrf24JammerActive) return;
     nrf24JammerActive = true;
     jamTotalPackets = 0;
     jamChannelPackets = 0;
@@ -362,81 +292,27 @@ void nrf24StartJammer() {
 
     if (jamSelectMode && jammerDetectedCount > 0 && jammerSelectedIndex >= 0) {
         jamChannel = jammerDetectedSignals[jammerSelectedIndex].channel;
-        Serial.print("[NRF24] Modo: SELECT CH | Canal=");
-        Serial.println(jamChannel);
     } else {
         jamChannel = 0;
-        Serial.println("[NRF24] Modo: KILL ALL | Canal inicial=0");
     }
 
     jamLastSwitch = 0;
 
-    Serial.println("[NRF24] Registradores ANTES de startConstCarrier:");
-    printAllRegisters();
-
-    Serial.print("[NRF24] >>> Chamando radio.startConstCarrier(RF24_PA_MAX, ");
-    Serial.print(jamChannel);
-    Serial.println(")...");
-
     // Inicia a portadora contínua
     radio.startConstCarrier(RF24_PA_MAX, jamChannel);
 
-    Serial.println("[NRF24] <<< startConstCarrier() retornou!");
-
-    // === CORREÇÃO CRÍTICA ===
-    // startConstCarrier() para chips P variant deixa CE LOW após reUseTX().
-    // Mas TX FIFO está vazio, então reUseTX() não funciona.
-    // Precisamos forçar CE HIGH manualmente para manter a transmissão ativa.
-    // CONT_WAVE bit no RF_SETUP faz o chip emitir portadora contínua quando CE=HIGH.
-    Serial.println("[NRF24] >>> FORCANDO CE HIGH manualmente!");
+    // FORÇAR CE HIGH para manter transmissão ativa
     digitalWrite(NRF_CE, HIGH);
-    Serial.println("[NRF24] <<< CE agora está HIGH");
-
-    Serial.println("[NRF24] Registradores DEPOIS de startConstCarrier + CE HIGH:");
-    printAllRegisters();
-
-    Serial.println("[NRF24] nrf24StartJammer() CONCLUIDO");
-    Serial.println("========================================");
-    Serial.println("");
 }
 
 void nrf24StopJammer() {
-    Serial.println("");
-    Serial.println("========================================");
-    Serial.println("[NRF24] nrf24StopJammer() CHAMADO");
-    Serial.println("========================================");
-
-    if (!nrf24JammerActive) {
-        Serial.println("[NRF24] NAO ESTAVA ATIVO! Retornando.");
-        return;
-    }
-
-    Serial.println("[NRF24] Registradores ANTES de stopConstCarrier:");
-    printAllRegisters();
-
-    Serial.println("[NRF24] >>> Chamando radio.stopConstCarrier()...");
+    if (!nrf24JammerActive) return;
     radio.stopConstCarrier();
-    Serial.println("[NRF24] <<< stopConstCarrier() retornou!");
-
-    // === CORREÇÃO: Garantir que CE vai para LOW ===
-    Serial.println("[NRF24] >>> FORCANDO CE LOW manualmente!");
     digitalWrite(NRF_CE, LOW);
-    Serial.println("[NRF24] <<< CE agora está LOW");
-
     radio.stopListening();
     radio.flush_tx();
     nrf24JammerActive = false;
-
-    Serial.println("[NRF24] Registradores DEPOIS de stopConstCarrier + CE LOW:");
-    printAllRegisters();
-
-    Serial.println("[NRF24] nrf24StopJammer() CONCLUIDO");
-    Serial.println("========================================");
-    Serial.println("");
 }
-
-static unsigned long debugLastPrint = 0;
-static int debugPrintCounter = 0;
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
@@ -446,43 +322,7 @@ int nrf24JammerLoop() {
     jamHistoryIndex = (jamHistoryIndex + 1) % 16;
 
     if (jamSelectMode) {
-        // === MODO SELECT CH: FIXO ===
-        // NUNCA chama setChannel() aqui!
-        // CE permanece HIGH (configurado no start)
-        // A portadora contínua é emitida no canal fixo
-
-        if (millis() - debugLastPrint >= 2000) {
-            debugLastPrint = millis();
-            debugPrintCounter++;
-            uint8_t rf_ch = readReg(REG_RF_CH);
-            uint8_t rf_setup = readReg(REG_RF_SETUP);
-            uint8_t config = readReg(REG_CONFIG);
-            uint8_t fifo_status = readReg(REG_FIFO_STATUS);
-
-            Serial.println("");
-            Serial.println("--- JAMMER SELECT CH (DEBUG) ---");
-            Serial.print("  Iteracao: "); Serial.println(debugPrintCounter);
-            Serial.print("  Canal configurado (variavel): "); Serial.println(jamChannel);
-            Serial.print("  Canal no registrador RF_CH: "); Serial.println(rf_ch);
-            Serial.print("  RF_SETUP: 0x"); Serial.println(rf_setup, HEX);
-            Serial.print("    CONT_WAVE="); Serial.print((rf_setup & 0x80) ? "1" : "0");
-            Serial.print(" PLL_LOCK="); Serial.print((rf_setup & 0x10) ? "1" : "0");
-            Serial.print(" RF_DR="); Serial.print((rf_setup & 0x08) ? "1(2Mbps)" : "0(1Mbps)");
-            Serial.print(" RF_PWR="); Serial.println((rf_setup >> 1) & 0x03);
-            Serial.print("  CONFIG: 0x"); Serial.println(config, HEX);
-            Serial.print("    PRIM_RX="); Serial.print((config & 0x01) ? "RX" : "TX");
-            Serial.print(" PWR_UP="); Serial.print((config & 0x02) ? "UP" : "DOWN");
-            Serial.print(" EN_CRC="); Serial.println((config & 0x08) ? "1" : "0");
-            Serial.print("  FIFO_STATUS: 0x"); Serial.println(fifo_status, HEX);
-            Serial.print("    TX_EMPTY="); Serial.print((fifo_status & 0x10) ? "1" : "0");
-            Serial.print(" TX_FULL="); Serial.print((fifo_status & 0x20) ? "1" : "0");
-            Serial.print(" REUSE_TX_PL="); Serial.println((fifo_status & 0x40) ? "1" : "0");
-            Serial.print("  Total packets: "); Serial.println(jamTotalPackets);
-            Serial.print("  isChipConnected: "); Serial.println(radio.isChipConnected() ? "SIM" : "NAO");
-            Serial.println("--------------------------------");
-            Serial.println("");
-        }
-
+        // === MODO SELECT CH: FIXO - NUNCA muda de canal ===
         for (int i = 0; i < 16; i++) {
             if (i == (jamChannel / 8)) {
                 jamHistory[i] = min(jamHistory[i] + 10, 40);
@@ -494,42 +334,6 @@ int nrf24JammerLoop() {
     }
 
     // === MODO KILL ALL: HOPPING ===
-    // CE permanece HIGH (configurado no start)
-    // setChannel() muda o canal mantendo a transmissão ativa
-    // A portadora contínua é emitida em cada canal
-
-    if (millis() - debugLastPrint >= 2000) {
-        debugLastPrint = millis();
-        debugPrintCounter++;
-        uint8_t rf_ch = readReg(REG_RF_CH);
-        uint8_t rf_setup = readReg(REG_RF_SETUP);
-        uint8_t config = readReg(REG_CONFIG);
-        uint8_t fifo_status = readReg(REG_FIFO_STATUS);
-
-        Serial.println("");
-        Serial.println("--- JAMMER KILL ALL (DEBUG) ---");
-        Serial.print("  Iteracao: "); Serial.println(debugPrintCounter);
-        Serial.print("  Canal configurado (variavel): "); Serial.println(jamChannel);
-        Serial.print("  Canal no registrador RF_CH: "); Serial.println(rf_ch);
-        Serial.print("  RF_SETUP: 0x"); Serial.println(rf_setup, HEX);
-        Serial.print("    CONT_WAVE="); Serial.print((rf_setup & 0x80) ? "1" : "0");
-        Serial.print(" PLL_LOCK="); Serial.print((rf_setup & 0x10) ? "1" : "0");
-        Serial.print(" RF_DR="); Serial.print((rf_setup & 0x08) ? "1(2Mbps)" : "0(1Mbps)");
-        Serial.print(" RF_PWR="); Serial.println((rf_setup >> 1) & 0x03);
-        Serial.print("  CONFIG: 0x"); Serial.println(config, HEX);
-        Serial.print("    PRIM_RX="); Serial.print((config & 0x01) ? "RX" : "TX");
-        Serial.print(" PWR_UP="); Serial.print((config & 0x02) ? "UP" : "DOWN");
-        Serial.print(" EN_CRC="); Serial.println((config & 0x08) ? "1" : "0");
-        Serial.print("  FIFO_STATUS: 0x"); Serial.println(fifo_status, HEX);
-        Serial.print("    TX_EMPTY="); Serial.print((fifo_status & 0x10) ? "1" : "0");
-        Serial.print(" TX_FULL="); Serial.print((fifo_status & 0x20) ? "1" : "0");
-        Serial.print(" REUSE_TX_PL="); Serial.println((fifo_status & 0x40) ? "1" : "0");
-        Serial.print("  Total packets: "); Serial.println(jamTotalPackets);
-        Serial.print("  isChipConnected: "); Serial.println(radio.isChipConnected() ? "SIM" : "NAO");
-        Serial.println("-------------------------------");
-        Serial.println("");
-    }
-
     int activeBar = (jamChannel / 8) % 16;
     for (int i = 0; i < 16; i++) {
         if (i == activeBar) {
@@ -539,28 +343,12 @@ int nrf24JammerLoop() {
         }
     }
 
-    // Muda de canal a cada 500 microssegundos
     if (micros() - jamLastSwitch >= 500) {
         jamLastSwitch = micros();
-        int oldChannel = jamChannel;
         jamChannel++;
         jamChannelPackets = 0;
         if (jamChannel > 125) jamChannel = 0;
-
         radio.setChannel(jamChannel);
-
-        // Debug: print quando muda de canal
-        static int channelChangeCounter = 0;
-        channelChangeCounter++;
-        if (channelChangeCounter % 500 == 0) {
-            uint8_t actual_ch = readReg(REG_RF_CH);
-            Serial.print("[NRF24] HOP: ");
-            Serial.print(oldChannel);
-            Serial.print(" -> ");
-            Serial.print(jamChannel);
-            Serial.print(" | RF_CH reg=");
-            Serial.println(actual_ch);
-        }
     }
 
     return jamChannel;
@@ -573,28 +361,20 @@ uint32_t nrf24GetJamChannelPackets() { return jamChannelPackets; }
 
 bool nrf24JammerIsSelectMode() { return jamSelectMode; }
 void nrf24JammerSetSelectMode(bool mode) { 
-    Serial.print("[NRF24] SetSelectMode: ");
-    Serial.println(mode ? "SELECT CH" : "KILL ALL");
-    jamSelectMode = mode; 
+    jamSelectMode = mode;
 }
 int nrf24JammerGetSelectedChannel() { return jamSelectedChannel; }
 void nrf24JammerSetSelectedChannel(int ch) {
     if (ch < 0) ch = 0;
     if (ch > 125) ch = 125;
     jamSelectedChannel = ch;
-
-    Serial.print("[NRF24] SetSelectedChannel: ");
-    Serial.println(ch);
-
     if (nrf24JammerActive && jamSelectMode) {
-        Serial.println("[NRF24] Reiniciando jammer no novo canal...");
         jamChannel = ch;
         jamChannelPackets = 0;
         radio.stopConstCarrier();
         delayMicroseconds(100);
         radio.startConstCarrier(RF24_PA_MAX, ch);
-        digitalWrite(NRF_CE, HIGH);  // FORÇAR CE HIGH novamente!
-        Serial.println("[NRF24] Jammer reiniciado no novo canal.");
+        digitalWrite(NRF_CE, HIGH);
     }
 }
 
