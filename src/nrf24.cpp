@@ -32,15 +32,13 @@ static uint8_t detectedCount = 0;
 static uint8_t analyzeSelectedIndex = 0;
 static bool analyzing = false;
 
-// Jammer
+// Jammer - KILL ALL otimizado
 static int jamChannel = 0;
 static unsigned long jamLastSwitch = 0;
-static bool jamSelectMode = false;
-static int jamSelectedChannel = 0;
 static uint32_t jamTotalPackets = 0;
 static uint32_t jamChannelPackets = 0;
 
-// Jammer SELECT CH - dados do grafico em tempo real
+// Jammer - dados do grafico em tempo real
 static int8_t jamHistory[16];
 static int jamHistoryIndex = 0;
 
@@ -51,13 +49,6 @@ static int scanBarIndex = 0;
 // Saved signals para replay
 static SignalData nrfSavedSignals[MAX_SAVED_SIGNALS];
 static uint8_t nrfSavedCount = 0;
-
-// ============================================================
-// JAMMER SELECT CH - Canais detectados para escolha
-// ============================================================
-static DetectedSignal jammerDetectedSignals[NRF_MAX_DETECTED];
-static uint8_t jammerDetectedCount = 0;
-static int8_t jammerSelectedIndex = 0;
 
 static void hardResetNRF24() {
     digitalWrite(NRF_CE, LOW);
@@ -237,84 +228,33 @@ SignalData* nrf24GetSavedSignal(uint8_t index) {
 }
 
 // ============================================================
-// JAMMER SELECT CH - Scan rapido de canais
+// JAMMER - KILL ALL OTIMIZADO (SEM MODO SELECT)
 // ============================================================
-void nrf24JammerScanChannels() {
-    jammerDetectedCount = 0;
-    jammerSelectedIndex = 0;
-    for (int i = 0; i < NRF_MAX_DETECTED; i++) jammerDetectedSignals[i].active = false;
+// Switch de canal a cada 50us (mais rapido que 500us anterior)
+// Usa const carrier para saturacao maxima
 
-    // Varredura rapida de 2 passadas
-    for (int pass = 0; pass < 2; pass++) {
-        for (int ch = 0; ch < 125; ch++) {
-            radio.setChannel(ch);
-            radio.startListening();
-            delayMicroseconds(200);
-            bool rpd = radio.testRPD();
-            if (rpd) {
-                int8_t rssi = -64 - random(20);
-                bool found = false;
-                for (int i = 0; i < jammerDetectedCount; i++) {
-                    if (jammerDetectedSignals[i].channel == ch) {
-                        jammerDetectedSignals[i].rssi = max(jammerDetectedSignals[i].rssi, rssi);
-                        jammerDetectedSignals[i].lastSeen = millis();
-                        jammerDetectedSignals[i].active = true;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found && jammerDetectedCount < NRF_MAX_DETECTED) {
-                    jammerDetectedSignals[jammerDetectedCount].channel = ch;
-                    jammerDetectedSignals[jammerDetectedCount].rssi = rssi;
-                    jammerDetectedSignals[jammerDetectedCount].lastSeen = millis();
-                    jammerDetectedSignals[jammerDetectedCount].active = true;
-                    jammerDetectedCount++;
-                }
-            }
-            radio.stopListening();
-            delayMicroseconds(30);
-        }
-    }
-}
+#define JAM_SWITCH_INTERVAL_US  50   // 50 microssegundos por canal (antes era 500)
+#define JAM_BURST_PACKETS       2    // 2 pacotes por canal por switch
 
-uint8_t nrf24JammerGetDetectedCount() { return jammerDetectedCount; }
-DetectedSignal* nrf24JammerGetDetected(uint8_t index) {
-    if (index < jammerDetectedCount) return &jammerDetectedSignals[index];
-    return nullptr;
-}
-
-int8_t nrf24JammerGetSelectedIndex() { return jammerSelectedIndex; }
-void nrf24JammerSetSelectedIndex(int8_t idx) {
-    if (idx >= 0 && idx < (int8_t)jammerDetectedCount) jammerSelectedIndex = idx;
-}
-
-// ============================================================
-// JAMMER - KILL ALL / SELECT CH
-// ============================================================
 void nrf24StartJammer() {
     if (nrf24JammerActive) return;
     nrf24JammerActive = true;
     jamTotalPackets = 0;
     jamChannelPackets = 0;
     jamHistoryIndex = 0;
+    jamChannel = 0;
+    jamLastSwitch = 0;
+
     for (int i = 0; i < 16; i++) jamHistory[i] = 0;
 
-    // Se modo SELECT e tem canais detectados, usa o canal selecionado
-    if (jamSelectMode && jammerDetectedCount > 0 && jammerSelectedIndex >= 0) {
-        jamChannel = jammerDetectedSignals[jammerSelectedIndex].channel;
-    } else {
-        jamChannel = 0;
-    }
-
-    jamLastSwitch = 0;
     radio.setAutoAck(false);
     radio.stopListening();
     radio.setRetries(0, 0);
     radio.setPALevel(RF24_PA_MAX, true);
     radio.setDataRate(RF24_2MBPS);
     radio.setCRCLength(RF24_CRC_DISABLED);
-    radio.setChannel(jamChannel);
-    radio.startConstCarrier(RF24_PA_MAX, jamChannel);
+    radio.setChannel(0);
+    radio.startConstCarrier(RF24_PA_MAX, 0);
 }
 
 void nrf24StopJammer() {
@@ -327,42 +267,34 @@ void nrf24StopJammer() {
 
 int nrf24JammerLoop() {
     if (!nrf24JammerActive) return -1;
+
     jamTotalPackets++;
     jamChannelPackets++;
 
-    // Atualiza dados reais do grafico baseado na atividade do jammer
-    jamHistoryIndex = (jamHistoryIndex + 1) % 16;
-    if (jamSelectMode) {
-        // No select mode, a barra do canal selecionado fica alta (FIXO no canal)
-        for (int i = 0; i < 16; i++) {
-            if (i == (jamChannel / 8)) {
-                jamHistory[i] = min(jamHistory[i] + 10, 40);
-            } else {
-                jamHistory[i] = max(jammerDetectedCount > 0 ? jamHistory[i] - 5 : 0, 2);
-            }
-        }
-        // MANTEM no canal selecionado - NAO muda de canal
-        return jamChannel;
-    } else {
-        // No kill all, varia conforme o canal atual
-        int activeBar = (jamChannel / 8) % 16;
-        for (int i = 0; i < 16; i++) {
-            if (i == activeBar) {
-                jamHistory[i] = min(jamHistory[i] + 15, 45);
-            } else {
-                jamHistory[i] = max(jamHistory[i] - 3, 2);
-            }
+    // Atualiza o histórico de barras com base na atividade real do jammer
+    // Cada barra representa um grupo de ~8 canais (125/16 ≈ 8)
+    int activeBar = (jamChannel / 8) % 16;
+
+    for (int i = 0; i < 16; i++) {
+        if (i == activeBar) {
+            // Barra ativa: sobe rapidamente (saturação)
+            jamHistory[i] = min(jamHistory[i] + 20, 50);
+        } else {
+            // Barras inativas: decaem lentamente
+            jamHistory[i] = max(jamHistory[i] - 2, 2);
         }
     }
 
-    // So muda de canal no modo KILL ALL
-    if (micros() - jamLastSwitch >= 500) {
-        jamLastSwitch = micros();
+    // Switch ultra-rápido de canal a cada 50us
+    unsigned long now = micros();
+    if (now - jamLastSwitch >= JAM_SWITCH_INTERVAL_US) {
+        jamLastSwitch = now;
         jamChannel++;
         jamChannelPackets = 0;
         if (jamChannel > 125) jamChannel = 0;
         radio.setChannel(jamChannel);
     }
+
     return jamChannel;
 }
 
@@ -370,20 +302,6 @@ const int8_t* nrf24GetJamHistory() { return jamHistory; }
 
 uint32_t nrf24GetJamTotalPackets() { return jamTotalPackets; }
 uint32_t nrf24GetJamChannelPackets() { return jamChannelPackets; }
-
-bool nrf24JammerIsSelectMode() { return jamSelectMode; }
-void nrf24JammerSetSelectMode(bool mode) { jamSelectMode = mode; }
-int nrf24JammerGetSelectedChannel() { return jamSelectedChannel; }
-void nrf24JammerSetSelectedChannel(int ch) {
-    if (ch < 0) ch = 0;
-    if (ch > 125) ch = 125;
-    jamSelectedChannel = ch;
-    if (nrf24JammerActive && jamSelectMode) {
-        jamChannel = ch;
-        jamChannelPackets = 0;
-        radio.setChannel(ch);
-    }
-}
 
 uint8_t nrf24GetDeviceCount() { return nrfDeviceCount; }
 NRFDevice* nrf24GetDevice(uint8_t index) {
