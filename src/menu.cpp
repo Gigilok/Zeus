@@ -302,37 +302,67 @@ void renderNRF24Jammer() {
 }
 
 // ============================================================
-// SCANNER SPECTRUM BARS (estilo imagem - barras finas + cursor)
+// SCANNER SPECTRUM BARS - SCROLLING (barras deslizantes)
+// Sinal entra pela DIREITA, historico empurra para ESQUERDA
 // ============================================================
 
+// Desenha uma barra individual no display
+// displayIdx: 0=esquerda (mais antigo), 63=direita (mais recente)
+void drawSpecBar(int displayIdx, int x, int baseY, int maxHeight) {
+    int8_t val = nrf24SpecGetBarValue(displayIdx);
+
+    // Mapeia valor (2-80) para altura em pixels
+    int h = map(val, 2, 80, 2, maxHeight);
+    if (h < 2) h = 2;
+    if (h > maxHeight) h = maxHeight;
+
+    int y = baseY - h;
+    int barW = SPEC_BAR_WIDTH;
+
+    // Verifica se esta barra esta selecionada
+    int8_t selBar = nrf24SpecGetSelectedBar();
+    bool isSelected = (displayIdx == selBar);
+
+    if (isSelected) {
+        // Barra selecionada: branca com contorno
+        getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        getDisplay().drawRect(x, y - 2, barW, 2, SSD1306_WHITE); // pico indicador
+    } else {
+        // Cor baseada na intensidade
+        if (val > 50) {
+            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        } else if (val > 30) {
+            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        } else if (val > 15) {
+            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        } else {
+            getDisplay().fillRect(x, y, barW, h, SSD1306_WHITE);
+        }
+    }
+}
+
 void drawSpecBars() {
-    const int8_t* bars = nrf24SpecGetBars();
     const int baseY = 62;      // Linha base
-    const int maxHeight = 48;  // Altura máxima (deixa espaço pro header)
-    const int startY = baseY - maxHeight;  // Topo do gráfico = 14
+    const int maxHeight = 48;  // Altura maxima
+    const int startX = 0;
+    const int barTotalW = SPEC_BAR_WIDTH + SPEC_BAR_GAP; // 4px
 
     for (int i = 0; i < SPEC_BARS; i++) {
-        int x = i * (SPEC_BAR_WIDTH + SPEC_BAR_GAP);
+        int x = startX + i * barTotalW;
         if (x >= SCREEN_WIDTH) break;
-
-        // Mapeia RSSI (-100 a 0) para altura (0 a maxHeight)
-        int h = map(bars[i], -100, -40, 2, maxHeight);
-        if (h < 2) h = 2;
-        if (h > maxHeight) h = maxHeight;
-
-        int y = baseY - h;
-
-        // Se é a barra selecionada, destaca (inverte)
-        if (i == nrf24SpecGetSelectedBar()) {
-            getDisplay().fillRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_BLACK);
-            getDisplay().drawRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_WHITE);
-        } else {
-            getDisplay().fillRect(x, y, SPEC_BAR_WIDTH, h, SSD1306_WHITE);
-        }
+        drawSpecBar(i, x, baseY, maxHeight);
     }
 
     // Linha base
     getDisplay().drawLine(0, baseY, SCREEN_WIDTH, baseY, SSD1306_WHITE);
+
+    // Linha de referencia verde (64) - aprox 1/4 da altura
+    int y64 = baseY - map(64, 2, 80, 2, maxHeight);
+    getDisplay().drawLine(0, y64, SCREEN_WIDTH, y64, SSD1306_WHITE);
+
+    // Linha de referencia amarela (10) - proximo da base
+    int y10 = baseY - map(10, 2, 80, 2, maxHeight);
+    getDisplay().drawLine(0, y10, SCREEN_WIDTH, y10, SSD1306_WHITE);
 }
 
 void renderNRF24Scanner() {
@@ -347,19 +377,66 @@ void renderNRF24Scanner() {
 
     // Mostra canal selecionado no topo (invertido para destacar)
     int8_t selBar = nrf24SpecGetSelectedBar();
-    int8_t selCh = nrf24SpecGetBarChannel(selBar);
+    int8_t selCh = nrf24SpecGetAnalysisChannel();
+    int freq = 2400 + selCh;
 
-    char chBuf[16];
-    snprintf(chBuf, 16, "CH %d", selCh);
+    char chBuf[20];
+    snprintf(chBuf, 20, "CH %d %dMHz", selCh, freq);
 
-    // Fundo preto na área do texto para legibilidade
-    getDisplay().fillRect(0, 0, 50, 10, SSD1306_BLACK);
+    // Fundo preto na area do texto para legibilidade
+    getDisplay().fillRect(0, 0, 90, 10, SSD1306_BLACK);
     getDisplay().setTextSize(1);
     getDisplay().setTextColor(SSD1306_WHITE);
     getDisplay().setCursor(2, 2);
     getDisplay().print(chBuf);
 
+    // Mostra frame count no canto direito
+    char frameBuf[12];
+    snprintf(frameBuf, 12, "%lu", nrf24SpecGetFrames());
+    getDisplay().setCursor(100, 2);
+    getDisplay().print(frameBuf);
+
     updateDisplay();
+}
+
+void handleNRF24Scanner(ButtonState btn) {
+    if (btn == BTN_PRESSED_UP) {
+        int8_t sel = nrf24SpecGetSelectedBar();
+        if (sel > 0) {
+            nrf24SpecSetSelectedBar(sel - 1);
+        }
+    }
+    if (btn == BTN_PRESSED_DOWN) {
+        int8_t sel = nrf24SpecGetSelectedBar();
+        if (sel < SPEC_BARS - 1) {
+            nrf24SpecSetSelectedBar(sel + 1);
+        }
+    }
+    if (btn == BTN_PRESSED_LEFT) {
+        int8_t ch = nrf24SpecGetAnalysisChannel();
+        if (ch > 0) {
+            nrf24SpecSetAnalysisChannel(ch - 1);
+        }
+    }
+    if (btn == BTN_PRESSED_RIGHT) {
+        int8_t ch = nrf24SpecGetAnalysisChannel();
+        if (ch < 124) {
+            nrf24SpecSetAnalysisChannel(ch + 1);
+        }
+    }
+    if (btn == BTN_PRESSED_SELECT) {
+        scannerRunning = !scannerRunning;
+        if (scannerRunning) {
+            nrf24SpecStart();
+        } else {
+            nrf24SpecStop();
+        }
+    }
+    if (btn == BTN_PRESSED_BACK) {
+        scannerRunning = false;
+        nrf24SpecStop();
+        goBack();
+    }
 }
 
 // ============================================================
