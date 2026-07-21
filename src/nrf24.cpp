@@ -49,20 +49,21 @@ static SignalData nrfSavedSignals[MAX_SAVED_SIGNALS];
 static uint8_t nrfSavedCount = 0;
 
 // ============================================================
-// SCANNER SPECTRUM - SCROLLING (64 barras deslizantes)
+// SCANNER SPECTRUM - EXATAMENTE como a imagem
+// 64 barras finas, altura minima 10, maxima 64
+// Linha verde em 64, linha amarela em 10
+// Titulo: "Frames/100ms"
 // ============================================================
 #define SPEC_BARS         64
-#define SPEC_BAR_WIDTH    3
+#define SPEC_BAR_WIDTH    1
 #define SPEC_BAR_GAP      1
 #define SPEC_CHANNELS     125
 #define SPEC_CH_PER_BAR   2
-#define SPEC_MAX_HEIGHT   80
+#define SPEC_MIN_HEIGHT   10    // altura minima das barras (igual imagem)
+#define SPEC_MAX_HEIGHT   64    // altura maxima (linha verde)
 
-// Ring buffer: cada posicao = altura de uma barra no tempo
-// displayIdx 0 = esquerda (mais antigo), 63 = direita (mais recente)
+// Ring buffer para scroll horizontal
 static int8_t specBarValues[SPEC_BARS];
-static int8_t specSelectedBar = 32;
-static int8_t specAnalysisChannel = 64;
 static bool specRunning = false;
 static uint32_t specFrames = 0;
 static int specWriteIndex = 0;
@@ -95,7 +96,7 @@ bool nrf24Init() {
 }
 
 // ============================================================
-// SCANNER ANTIGO (mantido para compatibilidade)
+// SCANNER ANTIGO (mantido)
 // ============================================================
 void nrf24StartScan() {
     scanning = true;
@@ -225,22 +226,20 @@ SignalData* nrf24GetSavedSignal(uint8_t index) {
 }
 
 // ============================================================
-// SCANNER SPECTRUM - NOVO: le REAL do RF24
+// SCANNER SPECTRUM - EXATAMENTE como a imagem desejada
 // ============================================================
 
 void nrf24SpecInit() {
     specRunning = false;
     specFrames = 0;
     specWriteIndex = 0;
-    specSelectedBar = 32;
-    specAnalysisChannel = 64;
     for (int i = 0; i < SPEC_BARS; i++) {
-        specBarValues[i] = 2;
+        specBarValues[i] = SPEC_MIN_HEIGHT;
     }
 }
 
-// Le UM canal do RF24 e retorna RSSI mapeado para altura (2-80)
-// Retorna tambem se houve atividade (para deteccao de jamming)
+// Le UM canal do RF24 e retorna altura (10-64)
+// Altura minima = 10 (linha amarela), maxima = 64 (linha verde)
 static int8_t readOneChannel(int ch, bool& outActive) {
     radio.setChannel(ch);
     radio.startListening();
@@ -252,67 +251,69 @@ static int8_t readOneChannel(int ch, bool& outActive) {
 
     outActive = (rpd || carrier);
 
+    // RSSI estimado
     int rssi = -100;
     if (rpd) {
-        rssi = -45 - random(15);   // Sinal FORTE: -60 a -45 dBm
+        rssi = -50 - random(15);   // -65 a -50 dBm
     } else if (carrier) {
-        rssi = -80 - random(10);   // Sinal FRACO: -90 a -80 dBm
+        rssi = -85 - random(10);   // -95 a -85 dBm
     }
-    // else: sem sinal = -100
 
-    // Mapeia RSSI (-100 a -45) -> altura (2 a 80)
-    int h = map(rssi, -100, -45, 2, SPEC_MAX_HEIGHT);
-    if (h < 2) h = 2;
+    // Mapeia RSSI para altura VISIVEL (10 a 64):
+    // -100 dBm -> 10 (minimo, linha amarela)
+    // -85 dBm  -> 12 (carrier fraco)
+    // -65 dBm  -> 32 (rpd fraco)
+    // -50 dBm  -> 64 (rpd forte, linha verde)
+    int h;
+    if (rssi <= -90) h = SPEC_MIN_HEIGHT;
+    else if (rssi <= -75) h = map(rssi, -90, -75, SPEC_MIN_HEIGHT, 18);
+    else if (rssi <= -55) h = map(rssi, -75, -55, 18, 45);
+    else h = map(rssi, -55, -40, 45, SPEC_MAX_HEIGHT);
+
+    if (h < SPEC_MIN_HEIGHT) h = SPEC_MIN_HEIGHT;
     if (h > SPEC_MAX_HEIGHT) h = SPEC_MAX_HEIGHT;
     return (int8_t)h;
 }
 
-// Suavizacao VU-meter: sobe rapido, desce lento
+// Suavizacao: sobe rapido, desce lento (VU-meter)
 static int8_t smoothValue(int8_t current, int8_t target) {
     int diff = target - current;
     if (diff > 0) {
-        current += max(diff * 2 / 3, 3);
+        current += max(diff * 2 / 3, 2);
         if (current > target) current = target;
     } else if (diff < 0) {
-        current += min(diff / 6, -1);
+        current += min(diff / 8, -1);
         if (current < target) current = target;
     }
-    if (current < 2) current = 2;
+    if (current < SPEC_MIN_HEIGHT) current = SPEC_MIN_HEIGHT;
     if (current > SPEC_MAX_HEIGHT) current = SPEC_MAX_HEIGHT;
     return current;
 }
 
-// Varre todos os 125 canais e retorna o MELHOR valor de cada grupo de 2
-// Se detectar JAMMING EXTERNO (atividade em >80% dos canais), retorna tudo zerado
+// Varre todos os 125 canais e retorna os 64 valores das barras
 static void scanAllChannels(int8_t* outBars) {
-    for (int i = 0; i < SPEC_BARS; i++) outBars[i] = 2;
+    for (int i = 0; i < SPEC_BARS; i++) outBars[i] = SPEC_MIN_HEIGHT;
 
     int activeCount = 0;
     int8_t rawValues[SPEC_CHANNELS];
     bool activeFlags[SPEC_CHANNELS];
 
-    // Primeira passada: le todos os canais
     for (int ch = 0; ch < SPEC_CHANNELS; ch++) {
         rawValues[ch] = readOneChannel(ch, activeFlags[ch]);
         if (activeFlags[ch]) activeCount++;
     }
 
-    // DETECCAO DE JAMMING EXTERNO:
-    // Se >80% dos canais estao ativos simultaneamente, e jamming (ruido)
-    // Nesse caso, nao ha sinal valido — barras caem
+    // DETECCAO DE JAMMING EXTERNO: >80% canais ativos = barras caem
     bool jammingDetected = (activeCount > (SPEC_CHANNELS * 8 / 10));
 
     if (jammingDetected) {
-        // Jamming detectado: todas as barras caem para 2 (sem sinal)
-        for (int i = 0; i < SPEC_BARS; i++) {
-            outBars[i] = 2;
-        }
+        for (int i = 0; i < SPEC_BARS; i++) outBars[i] = SPEC_MIN_HEIGHT;
         return;
     }
 
-    // Normal: agrupa os melhores valores por barra
+    // Agrupa: cada barra = melhor sinal do seu grupo de canais
     for (int ch = 0; ch < SPEC_CHANNELS; ch++) {
-        int barIdx = ch / SPEC_CH_PER_BAR;
+        int barIdx = ch * SPEC_BARS / SPEC_CHANNELS;
         if (barIdx >= SPEC_BARS) barIdx = SPEC_BARS - 1;
         if (rawValues[ch] > outBars[barIdx]) outBars[barIdx] = rawValues[ch];
     }
@@ -321,28 +322,10 @@ static void scanAllChannels(int8_t* outBars) {
 void nrf24SpecScan() {
     if (!specRunning) return;
 
-    // Varre todos os canais e pega 64 valores
     int8_t newReadings[SPEC_BARS];
     scanAllChannels(newReadings);
 
-    // Suaviza e coloca no ring buffer
-    // A barra mais a DIREITA (displayIdx = 63) = leitura mais recente
-    // A barra mais a ESQUERDA (displayIdx = 0) = leitura mais antiga
-    // 
-    // Ring buffer: specWriteIndex aponta para a posicao MAIS ANTIGA
-    // (proxima a ser sobrescrita). A mais recente esta em (writeIndex - 1).
-    //
-    // Para o display: displayIdx 0 = mais antigo = writeIndex
-    //                 displayIdx 63 = mais recente = (writeIndex - 1)
-
-    // Empurra TODOS os 64 valores no buffer (cada posicao = uma barra no tempo)
-    // Na verdade, cada posicao do ring buffer deve guardar o snapshot de TODAS as barras
-    // Mas isso gasta 64*64 = 4096 bytes...
-
-    // SIMPLIFICACAO: O ring buffer guarda 64 valores. Cada valor = uma barra.
-    // A cada ciclo, empurramos os 64 valores novos, um por um.
-    // Isso faz o grafico "andar" da esquerda para direita.
-
+    // Empurra no ring buffer (scroll da direita para esquerda)
     for (int i = 0; i < SPEC_BARS; i++) {
         specBarValues[specWriteIndex] = smoothValue(specBarValues[specWriteIndex], newReadings[i]);
         specWriteIndex = (specWriteIndex + 1) % SPEC_BARS;
@@ -369,36 +352,12 @@ void nrf24SpecStop() {
 bool nrf24SpecIsRunning() { return specRunning; }
 uint32_t nrf24SpecGetFrames() { return specFrames; }
 
-// Retorna o valor de uma barra para desenho
+// Retorna valor de uma barra para desenho
 // displayIdx 0 = esquerda (mais antigo), 63 = direita (mais recente)
 int8_t nrf24SpecGetBarValue(int displayIdx) {
-    if (displayIdx < 0 || displayIdx >= SPEC_BARS) return 2;
-    // writeIndex aponta para a posicao mais antiga
-    // displayIdx 0 = mais antigo = writeIndex
-    // displayIdx 63 = mais recente = (writeIndex - 1 + 64) % 64
+    if (displayIdx < 0 || displayIdx >= SPEC_BARS) return SPEC_MIN_HEIGHT;
     int ringIdx = (specWriteIndex + displayIdx) % SPEC_BARS;
     return specBarValues[ringIdx];
-}
-
-int8_t nrf24SpecGetSelectedBar() { return specSelectedBar; }
-void nrf24SpecSetSelectedBar(int8_t bar) {
-    if (bar >= 0 && bar < SPEC_BARS) {
-        specSelectedBar = bar;
-        specAnalysisChannel = bar * SPEC_CH_PER_BAR;
-    }
-}
-
-int8_t nrf24SpecGetAnalysisChannel() { return specAnalysisChannel; }
-void nrf24SpecSetAnalysisChannel(int8_t ch) {
-    if (ch >= 0 && ch < 125) {
-        specAnalysisChannel = ch;
-        specSelectedBar = ch / SPEC_CH_PER_BAR;
-    }
-}
-
-int8_t nrf24SpecGetBarChannel(int8_t bar) {
-    if (bar < 0 || bar >= SPEC_BARS) return -1;
-    return bar * SPEC_CH_PER_BAR;
 }
 
 // ============================================================
