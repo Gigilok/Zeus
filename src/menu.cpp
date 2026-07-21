@@ -506,9 +506,8 @@ void handleNRF24Jammer(ButtonState btn) {
 // ============================================================
 // DEAUTH - EXATAMENTE IGUAL AO VÍDEO
 // ============================================================
-// Tela 1: Lista de redes WiFi (SSID + RSSI)
+// Tela 1: Lista de redes WiFi (SSID + RSSI) - LIMPA, sem texto no canto
 // Tela 2: Network Details (SSID, Auth, Status, Pkts, Succ%)
-//         "Press RIGHT to Start" (botão SELECT)
 // Tela 3: Atacando (Status: Running, Pkts contando)
 
 void drawNetworkItem(int index, int y, bool selected) {
@@ -561,11 +560,11 @@ void renderDeauthDetail() {
     snprintf(buf, 64, "Succ: %d%%", getDeauthSuccessPercent());
     drawText(64, 42, buf, 1);
 
-    // Instrução
+    // Instrução no rodapé
     if (!deauthActive) {
-        drawCenteredText(55, "Press RIGHT to Start", 1);
+        drawCenteredText(55, "Press SELECT to Start", 1);
     } else {
-        drawCenteredText(55, "SEL: Stop", 1);
+        drawCenteredText(55, "SELECT: Stop", 1);
     }
 
     updateDisplay();
@@ -578,7 +577,7 @@ void renderDeauth() {
         return;
     }
 
-    // Tela de lista de redes
+    // Tela de lista de redes - LIMPA, igual ao vídeo
     if (!inListView) {
         inListView = true;
         listIndex = 0;
@@ -594,13 +593,21 @@ void renderDeauth() {
 
     if (getNetworkCount() == 0) {
         clearDisplay();
-        drawMenuHeader("DEAUTH");
+        drawMenuHeader("Wi-Fi");
         drawCenteredText(30, "No networks", 1);
         updateDisplay();
         return;
     }
 
-    renderList("Wi-Fi Networks", getNetworkCount(), drawNetworkItem);
+    // Lista limpa - só header + redes, NADA no canto inferior
+    clearDisplay();
+    drawMenuHeader("Wi-Fi Networks");
+    int visibleItems = 5;
+    int startIndex = (listIndex >= visibleItems) ? listIndex - visibleItems + 1 : 0;
+    for (int i = 0; i < visibleItems && (startIndex + i) < (int)getNetworkCount(); i++) {
+        drawNetworkItem(startIndex + i, 12 + i * 10, (startIndex + i) == listIndex);
+    }
+    updateDisplay();
 }
 
 void handleDeauth(ButtonState btn) {
@@ -608,10 +615,8 @@ void handleDeauth(ButtonState btn) {
     if (deauthDetailView) {
         if (btn == BTN_PRESSED_SELECT) {
             if (!deauthActive) {
-                // START deauth
                 startDeauth(deauthSelectedNetwork);
             } else {
-                // STOP deauth
                 stopDeauth();
             }
         }
@@ -633,7 +638,6 @@ void handleDeauth(ButtonState btn) {
     if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
     if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
 }
-
 // ============================================================
 // PASSWORD / EVIL TWIN (mantido)
 // ============================================================
