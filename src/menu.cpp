@@ -196,6 +196,7 @@ void enterMenu(MenuState state) {
 }
 
 static int analyzeScrollIndex = 0;
+static bool scannerRunning = false;
 
 void goBack() {
     switch (currentMenu) {
@@ -303,7 +304,6 @@ void renderNRF24Jammer() {
 // ============================================================
 // SCANNER SPECTRUM BARS (estilo imagem - barras finas + cursor)
 // ============================================================
-static bool scannerRunning = false;
 
 void drawSpecBars() {
     const int8_t* bars = nrf24SpecGetBars();
