@@ -313,8 +313,17 @@ void nrf24StartJammer() {
     radio.setPALevel(RF24_PA_MAX, true);
     radio.setDataRate(RF24_2MBPS);
     radio.setCRCLength(RF24_CRC_DISABLED);
-    radio.setChannel(jamChannel);
-    radio.startConstCarrier(RF24_PA_MAX, jamChannel);
+
+    if (jamSelectMode) {
+        // === MODO SELECT CH: startConstCarrier trava o canal no RF_CH ===
+        // NAO chamar setChannel() depois — isso sobrescreve o RF_CH!
+        radio.startConstCarrier(RF24_PA_MAX, jamChannel);
+    } else {
+        // === MODO KILL ALL: hopping rapido com setChannel ===
+        // NAO usar startConstCarrier aqui — ele configura o chip de forma
+        // diferente e setChannel() nao funciona corretamente depois
+        radio.setChannel(jamChannel);
+    }
 }
 
 void nrf24StopJammer() {
@@ -332,9 +341,11 @@ int nrf24JammerLoop() {
 
     // Atualiza dados reais do grafico baseado na atividade do jammer
     jamHistoryIndex = (jamHistoryIndex + 1) % 16;
-
     if (jamSelectMode) {
-        // === MODO SELECT CH: FIXO no canal selecionado, NAO muda de canal ===
+        // === MODO SELECT CH: FIXO no canal selecionado ===
+        // startConstCarrier() ja configurou o canal no RF_CH.
+        // NUNCA chamar radio.setChannel() aqui — isso sobrescreve o RF_CH
+        // e faz o jammer pular de canal!
         for (int i = 0; i < 16; i++) {
             if (i == (jamChannel / 8)) {
                 jamHistory[i] = min(jamHistory[i] + 10, 40);
@@ -342,7 +353,6 @@ int nrf24JammerLoop() {
                 jamHistory[i] = max(jammerDetectedCount > 0 ? jamHistory[i] - 5 : 0, 2);
             }
         }
-        // RETORNA IMEDIATAMENTE — nao executa o codigo de hopping abaixo
         return jamChannel;
     }
 
@@ -362,6 +372,7 @@ int nrf24JammerLoop() {
         jamChannel++;
         jamChannelPackets = 0;
         if (jamChannel > 125) jamChannel = 0;
+        // No KILL ALL, usamos setChannel para hopping rapido
         radio.setChannel(jamChannel);
     }
     return jamChannel;
@@ -382,7 +393,12 @@ void nrf24JammerSetSelectedChannel(int ch) {
     if (nrf24JammerActive && jamSelectMode) {
         jamChannel = ch;
         jamChannelPackets = 0;
-        radio.setChannel(ch);
+        // NAO chamar radio.setChannel() aqui no modo SELECT CH!
+        // setChannel() sobrescreve o RF_CH configurado por startConstCarrier().
+        // Para mudar de canal no SELECT CH, precisamos parar e reiniciar
+        // o carrier no novo canal.
+        radio.stopConstCarrier();
+        radio.startConstCarrier(RF24_PA_MAX, ch);
     }
 }
 
