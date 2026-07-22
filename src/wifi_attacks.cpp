@@ -1,3 +1,6 @@
+// ============================================================
+// wifi_attacks.cpp
+// ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include "config.h"
@@ -129,7 +132,7 @@ static void startBssidClone(uint8_t networkIndex) {
     delay(200);
 
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
 
     if (apOk) {
@@ -139,8 +142,6 @@ static void startBssidClone(uint8_t networkIndex) {
         deauthActive = true;
         cloneStartTime = millis();
         cloneHealthCheckFailures = 0;
-        deauthPacketCount = 0;
-        deauthSuccessCount = 0;
         
         Serial.println("[Clone] BSSID CLONE ACTIVE");
     } else {
@@ -166,7 +167,7 @@ static void restartBssidClone() {
     delay(200);
     
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-        WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         cloneHealthCheckFailures = 0;
@@ -246,6 +247,10 @@ void startDeauth(uint8_t networkIndex) {
         return;
     }
 
+    // === RESET EXPLICITO dos contadores a cada novo ataque ===
+    deauthPacketCount = 0;
+    deauthSuccessCount = 0;
+
     startBssidClone(networkIndex);
     startBeaconFlood(networkIndex);
 
@@ -262,6 +267,10 @@ void stopDeauth() {
     stopBssidClone();
     stopBeaconFlood();
     esp_wifi_set_promiscuous(false);
+
+    // === ZERA os contadores ao parar para nao ficar 100% travado ===
+    deauthPacketCount = 0;
+    deauthSuccessCount = 0;
 }
 
 // ============================================================
