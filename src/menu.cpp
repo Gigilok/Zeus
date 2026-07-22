@@ -183,10 +183,10 @@ bool capturing = false;
 unsigned long captureStartTime = 0;
 
 // ============================================================
-// DEAUTH STATE
+// DEAUTH STATE (igual ao vídeo)
 // ============================================================
-static int8_t deauthSelectedNetwork = -1;
-static bool deauthDetailView = false;
+static int8_t deauthSelectedNetwork = -1;  // -1 = nenhum selecionado ainda
+static bool deauthDetailView = false;       // false = lista, true = tela de detalhes
 
 // ============================================================
 // MENU NAVIGATION
@@ -280,7 +280,7 @@ void renderList(const char* title, int count, void (*drawItem)(int, int, bool)) 
 }
 
 // ============================================================
-// SPECTRUM / SCANNER
+// SPECTRUM / SCANNER (mantido do original)
 // ============================================================
 void drawRealSpectrum(int startX, int startY, int barWidth, int barCount, int maxHeight, const int8_t* data) {
     for (int i = 0; i < barCount; i++) {
@@ -504,8 +504,15 @@ void handleNRF24Jammer(ButtonState btn) {
 }
 
 // ============================================================
-// DEAUTH - CORRIGIDO
+// DEAUTH - EXATAMENTE IGUAL AO VÍDEO
 // ============================================================
+// Fluxo:
+//   1. Lista de redes (SSID | RSSI) - TELA LIMPA, sem texto no canto
+//   2. SELECT na rede → Tela "Network Details"
+//      (SSID, Auth, Status, Pkts, Succ%, "Press SELECT to Start")
+//   3. SELECT → inicia ataque (Status: Running, Pkts ↑, Succ% ↑)
+//   4. SELECT/BACK → para ataque
+
 void drawNetworkItem(int index, int y, bool selected) {
     if (selected) {
         getDisplay().fillRect(0, y, 128, 10, 1);
@@ -522,6 +529,7 @@ void drawNetworkItem(int index, int y, bool selected) {
     if (selected) getDisplay().setTextColor(1);
 }
 
+// TELA DE DETALHES DA REDE (após selecionar na lista)
 void renderDeauthDetail() {
     clearDisplay();
     drawMenuHeader("Network Details");
@@ -535,23 +543,25 @@ void renderDeauthDetail() {
 
     char buf[64];
 
+    // Linha 1: SSID
     snprintf(buf, 64, "SSID: %s", net->ssid);
     drawText(0, 12, buf, 1);
 
+    // Linha 2: Auth
     snprintf(buf, 64, "Auth: %s", net->encrypted ? "WPA/WPA2" : "OPEN");
     drawText(0, 22, buf, 1);
 
-    snprintf(buf, 64, "CH: %d", net->channel);
-    drawText(0, 27, buf, 1);
-
+    // Linha 3: Status (Stopped / Running)
     snprintf(buf, 64, "Status: %s", deauthActive ? "Running" : "Stopped");
     drawText(0, 32, buf, 1);
 
+    // Linha 4: Pkts (esquerda) e Succ% (direita)
     snprintf(buf, 64, "Pkts: %lu", getDeauthPacketCount());
     drawText(0, 42, buf, 1);
     snprintf(buf, 64, "Succ: %d%%", getDeauthSuccessPercent());
     drawText(64, 42, buf, 1);
 
+    // Linha 5: Instrução no rodapé
     if (!deauthActive) {
         drawCenteredText(55, "Press SELECT to Start", 1);
     } else {
@@ -561,12 +571,16 @@ void renderDeauthDetail() {
     updateDisplay();
 }
 
+// TELA DE LISTA DE REDES (tela inicial do deauth)
 void renderDeauth() {
+    // Se estiver na tela de detalhes da rede selecionada
     if (deauthDetailView) {
         renderDeauthDetail();
         return;
     }
 
+    // === TELA DE LISTA DE REDES - LIMPA ===
+    // Só mostra o header e a lista. NADA no canto inferior.
     if (!inListView) {
         inListView = true;
         listIndex = 0;
@@ -588,6 +602,7 @@ void renderDeauth() {
         return;
     }
 
+    // Desenha lista LIMPA - só header + itens
     clearDisplay();
     drawMenuHeader("Wi-Fi Networks");
     int visibleItems = 5;
@@ -595,10 +610,12 @@ void renderDeauth() {
     for (int i = 0; i < visibleItems && (startIndex + i) < (int)getNetworkCount(); i++) {
         drawNetworkItem(startIndex + i, 12 + i * 10, (startIndex + i) == listIndex);
     }
+    // NENHUM texto no canto inferior - tela limpa igual ao vídeo
     updateDisplay();
 }
 
 void handleDeauth(ButtonState btn) {
+    // === NA TELA DE DETALHES ===
     if (deauthDetailView) {
         if (btn == BTN_PRESSED_SELECT) {
             if (!deauthActive) {
@@ -615,6 +632,7 @@ void handleDeauth(ButtonState btn) {
         return;
     }
 
+    // === NA LISTA DE REDES ===
     if (btn == BTN_PRESSED_SELECT) {
         if (listIndex >= 0 && listIndex < (int)getNetworkCount()) {
             deauthSelectedNetwork = listIndex;
@@ -624,9 +642,8 @@ void handleDeauth(ButtonState btn) {
     if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
     if (btn == BTN_PRESSED_DOWN && listIndex < listMaxIndex) listIndex++;
 }
-
 // ============================================================
-// PASSWORD / EVIL TWIN
+// PASSWORD / EVIL TWIN (mantido)
 // ============================================================
 void renderPassword() {
     if (!inListView) {
@@ -695,7 +712,7 @@ void handlePassword(ButtonState btn) {
 }
 
 // ============================================================
-// OUTROS RENDERERS
+// OUTROS RENDERERS (mantidos do original)
 // ============================================================
 void renderCC1101Copy() {
     clearDisplay();
@@ -1143,33 +1160,7 @@ void menuInit() {
 void menuLoop() {
     ButtonState btn = readButtons();
 
-    // ============================================================
-    // MODO DEAUTH: display so atualiza a cada 250ms
-    // deauthLoop roda em loop apertado sem renderizar
-    // ============================================================
-    if (deauthActive && (currentMenu == MENU_ATTACK_DEAUTH || currentMenu == MENU_NET_DEAUTH)) {
-        static unsigned long lastDisplayUpdate = 0;
-
-        // Processa botoes
-        handleDeauth(btn);
-        if (btn == BTN_PRESSED_BACK) goBack();
-
-        // Roda multiplos bursts de deauth por frame
-        for (int burst = 0; burst < 8; burst++) {
-            deauthLoop();
-        }
-
-        // Atualiza display apenas a cada 250ms
-        if (millis() - lastDisplayUpdate > 250) {
-            lastDisplayUpdate = millis();
-            renderDeauth();
-        }
-
-        delay(1);
-        return;
-    }
-
-    // === DEAUTH LOOP normal (quando nao esta na tela de deauth mas deauthActive=true) ===
+    // === DEAUTH LOOP: envia pacotes enquanto ativo ===
     if (deauthActive) {
         deauthLoop();
     }
