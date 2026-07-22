@@ -288,7 +288,7 @@ void startDeauth(uint8_t networkIndex) {
 
     // === PASSO 3: Inicia modo APSTA ===
     // APSTA garante que ambas as interfaces existem
-    WiFi.mode(WIFI_APSTA);
+    WiFi.mode(WIFI_AP_STA);
     delay(300);
 
     // === PASSO 4: Sobe AP hidden no canal do alvo ===
