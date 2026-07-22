@@ -1,23 +1,22 @@
 // ============================================================
 // wifi_bypass.cpp
 // BYPASS do ieee80211_raw_frame_sanity_check
-// Assinatura compativel com Hydra-ESP / risinek: 3 argumentos int32_t
-// No Arduino-ESP32 o --wrap pode nao funcionar, mas deixamos como fallback.
-// O metodo principal de deauth agora eh BSSID Clone (wifi_attacks.cpp).
+// Assinatura correta para Arduino-ESP32 v2.0+ (ESP-IDF v4.4+)
+// 4 argumentos: ifx, buffer, len, auto_seq
 // ============================================================
 #include <Arduino.h>
 #include <stdbool.h>
 
-// Assinatura usada pelo ESP-IDF / libwifi (3 argumentos int32_t)
-// Se o linker wrap funcionar, esta funcao substitui a original.
-// Se nao funcionar, o BSSID Clone em wifi_attacks.cpp faz o trabalho.
+// Assinatura REAL da funcao na libnet80211.a do Arduino-ESP32
 extern "C" int __wrap_ieee80211_raw_frame_sanity_check(
-    int32_t arg1,
-    int32_t arg2,
-    int32_t arg3
+    int ifx,
+    const void *buffer,
+    int len,
+    bool auto_seq
 ) {
-    (void)arg1;
-    (void)arg2;
-    (void)arg3;
+    (void)ifx;
+    (void)buffer;
+    (void)len;
+    (void)auto_seq;
     return 0;
 }
