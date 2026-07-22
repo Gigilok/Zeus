@@ -1206,9 +1206,9 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    // CORRECAO: durante deauth, delay menor para taxa de envio alta
+    // CORRECAO: durante deauth, delay minimo para taxa de envio maxima
     if (deauthActive) {
-        delay(2);
+        delay(1);
     } else {
         delay(50);
     }
