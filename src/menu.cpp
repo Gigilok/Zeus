@@ -1143,7 +1143,33 @@ void menuInit() {
 void menuLoop() {
     ButtonState btn = readButtons();
 
-    // === DEAUTH LOOP: envia pacotes enquanto ativo ===
+    // ============================================================
+    // MODO DEAUTH: display so atualiza a cada 250ms
+    // deauthLoop roda em loop apertado sem renderizar
+    // ============================================================
+    if (deauthActive && (currentMenu == MENU_ATTACK_DEAUTH || currentMenu == MENU_NET_DEAUTH)) {
+        static unsigned long lastDisplayUpdate = 0;
+
+        // Processa botoes
+        handleDeauth(btn);
+        if (btn == BTN_PRESSED_BACK) goBack();
+
+        // Roda multiplos bursts de deauth por frame
+        for (int burst = 0; burst < 8; burst++) {
+            deauthLoop();
+        }
+
+        // Atualiza display apenas a cada 250ms
+        if (millis() - lastDisplayUpdate > 250) {
+            lastDisplayUpdate = millis();
+            renderDeauth();
+        }
+
+        delay(1);
+        return;
+    }
+
+    // === DEAUTH LOOP normal (quando nao esta na tela de deauth mas deauthActive=true) ===
     if (deauthActive) {
         deauthLoop();
     }
@@ -1206,10 +1232,5 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    // CORRECAO: durante deauth, delay minimo para taxa de envio maxima
-    if (deauthActive) {
-        delay(1);
-    } else {
-        delay(50);
-    }
+    delay(50);
 }
