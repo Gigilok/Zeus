@@ -222,7 +222,7 @@ static void handleHandshakeStatus() {
 // GET /api/handshake/download
 static void handleHandshakeDownload() {
     if (getHandshakeMessageCount() == 0) {
-        sendERR("No handshake captured");
+        sendERR("No handshake captured. Use Evil Twin first (Redes WiFi > Evil Twin)");
         return;
     }
     // TODO: implementar download real do buffer em RAM
