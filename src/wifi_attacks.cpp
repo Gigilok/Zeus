@@ -178,11 +178,60 @@ static bool isSoftAPActive() {
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
-    // Keep AP active for Termux controller connection!
-    if (WiFi.getMode() == WIFI_AP) {
+    Serial.println("[WiFi] Starting network scan...");
+
+    // AP_STA async scan is buggy on ESP32. Use STA sync scan and quickly restore AP.
+    bool hadAP = (WiFi.getMode() == WIFI_AP_STA || WiFi.getMode() == WIFI_AP);
+
+    // Switch to STA for reliable scan
+    WiFi.mode(WIFI_STA);
+    delay(200);
+
+    // Synchronous scan with 2 second timeout per channel
+    int n = WiFi.scanNetworks(false, true, false, 5000);
+    Serial.printf("[WiFi] Scan found %d networks
+", n);
+
+    if (n > 0) {
+        networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
+        for (int i = 0; i < networkCount; i++) {
+            strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 31);
+            scannedNetworks[i].ssid[31] = '';
+            memcpy(scannedNetworks[i].bssid, WiFi.BSSID(i), 6);
+            scannedNetworks[i].rssi = WiFi.RSSI(i);
+            scannedNetworks[i].channel = WiFi.channel(i);
+            scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+            scannedNetworks[i].id = i;
+            Serial.printf("  [%d] %s CH%d %ddBm %s
+", i, scannedNetworks[i].ssid, 
+                         scannedNetworks[i].channel, scannedNetworks[i].rssi,
+                         scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
+        }
+        WiFi.scanDelete();
+    } else if (n == 0) {
+        Serial.println("[WiFi] No networks found");
+    } else {
+        Serial.printf("[WiFi] Scan error: %d
+", n);
+    }
+
+    // Restore CrazyCat AP immediately
+    if (hadAP) {
+        Serial.println("[WiFi] Restoring CrazyCat AP...");
         WiFi.mode(WIFI_AP_STA);
         delay(100);
+        WiFi.softAPConfig(
+            IPAddress(192, 168, 4, 1),
+            IPAddress(192, 168, 4, 1),
+            IPAddress(255, 255, 255, 0)
+        );
+        delay(50);
+        WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+        delay(200);
+        Serial.printf("[WiFi] AP restored: %s
+", WiFi.softAPIP().toString().c_str());
     }
+}
     // Async scan to prevent watchdog
     WiFi.scanNetworks(true, true);
     int16_t n = 0;
