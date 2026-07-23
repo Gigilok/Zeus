@@ -19,11 +19,11 @@ void setup() {
     Serial.println("\n[BOOT] Crazy Cat v3.1 starting...");
 
     // ============================================================
-    // WiFi AP PRIMEIRO (antes de tudo que possa crashar)
+    // WiFi AP + STA (AP_STA mantém clientes conectados durante scan)
     // ============================================================
     WiFi.mode(WIFI_OFF);
     delay(100);
-    WiFi.mode(WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);  // MODO CORRIGIDO: permite scan sem derrubar AP
     delay(100);
     WiFi.softAPConfig(
         IPAddress(192, 168, 4, 1),
