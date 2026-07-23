@@ -8,6 +8,7 @@ extern bool cc1101Init();
 extern void menuInit();
 extern void menuLoop();
 extern void showLoading(const char* text, int percent);
+extern void startAPIServer();
 
 bool nrf24OK = false;
 bool cc1101OK = false;
@@ -30,8 +31,20 @@ void setup() {
     cc1101OK = cc1101Init();
     showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
 
-    WiFi.mode(WIFI_STA);
-    showLoading("WiFi OK", 80);
+    // ============================================================
+    // WiFi AP + HTTP API Server
+    // ============================================================
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+    WiFi.softAPConfig(
+        IPAddress(192, 168, 4, 1),
+        IPAddress(192, 168, 4, 1),
+        IPAddress(255, 255, 255, 0)
+    );
+    startAPIServer();
+
+    showLoading("WiFi AP OK", 80);
+    Serial.println("[WiFi] AP CrazyCat iniciado em 192.168.4.1:8080");
 
     showLoading("Pronto!", 100);
     delay(500);
