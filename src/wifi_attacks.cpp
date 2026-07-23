@@ -282,7 +282,21 @@ static void restartBssidClone() {
     }
 }
 
-static void stopBssidClone() {
+static void restoreCrazyCatAP() {
+    WiFi.mode(WIFI_AP_STA);
+    delay(200);
+    WiFi.softAPConfig(
+        IPAddress(192, 168, 4, 1),
+        IPAddress(192, 168, 4, 1),
+        IPAddress(255, 255, 255, 0)
+    );
+    delay(100);
+    WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+    delay(200);
+    Serial.println("[WiFi] CrazyCat AP restored");
+}
+
+void stopBssidClone() {
     if (!bssidCloneActive && !isSoftAPActive()) return;
     Serial.println("[Clone] Stopping...");
     stopPromiscuous();
@@ -295,10 +309,10 @@ static void stopBssidClone() {
     delay(100);
     WiFi.mode(WIFI_OFF);
     delay(200);
-    WiFi.mode(WIFI_STA);
-    delay(200);
+    // Restore CrazyCat AP instead of leaving in STA mode
+    restoreCrazyCatAP();
     bssidCloneActive = false;
-    Serial.println("[Clone] Stopped, MAC restored");
+    Serial.println("[Clone] Stopped, MAC restored, CrazyCat AP active");
 }
 
 // ============================================================
@@ -391,6 +405,7 @@ void startFakeAP(const char* ssid) {
 void stopFakeAP() {
     WiFi.softAPdisconnect(true);
     fakeAPEnabled = false;
+    restoreCrazyCatAP();
 }
 
 bool isFakeAPActive() { return fakeAPEnabled; }
