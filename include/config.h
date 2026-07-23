@@ -135,16 +135,23 @@ extern bool evilTwinActive;
 #define NRF_MAX_DETECTED    10
 
 
-// Portal Captive
-extern void startPortal(const char* ssid);
-extern void stopPortal();
-extern void portalLoop();
-extern bool isPortalActive();
-extern const char* getCapturedPassword();
-extern const char* getPortalStatus();
+// Handshake Capture
+extern void startHandshakeCapture();
+extern void stopHandshakeCapture();
+extern bool isHandshakeCapturing();
+extern const char* getHandshakeStatus();
+extern uint8_t getHandshakeMessageCount();
+extern bool isHandshakeComplete();
+extern bool saveHandshakeToFile(const char* filename);
+extern bool sendHandshakeViaBluetooth(const char* filename);
+extern size_t getHandshakeFileSize(const char* filename);
+extern void serveHandshakeHTTP();
 
-// Evil Twin
-extern void startEvilTwin(uint8_t networkIndex);
-extern void stopEvilTwin();
+
+// API REST
+extern void startAPIServer();
+extern void stopAPIServer();
+extern void apiLoop();
+extern bool isAPIServerRunning();
 
 #endif
