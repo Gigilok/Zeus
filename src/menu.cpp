@@ -156,11 +156,6 @@ extern void clearHandshakeBuffer();
 // ============================================================
 // MENU STRUCTURES
 // ============================================================
-struct MenuItem {
-    const char* label;
-    MenuState state;
-};
-
 MenuItem mainMenu[] = {
     {"NRF24", MENU_NRF24},
     {"CC1101", MENU_CC1101},
@@ -1262,6 +1257,5 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    yield();
-    delay(5);
+    delay(50);
 }
