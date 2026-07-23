@@ -171,7 +171,9 @@ static void handleNetworks() {
 
 // POST /api/networks/scan
 static void handleScanNetworks() {
+    yield();
     scanNetworks();
+    yield();
     sendOK("Scan complete");
 }
 
@@ -230,7 +232,6 @@ static void handleHandshakeDownload() {
 // POST /api/nrf24/jammer/start
 static void handleNRF24JammerStart() {
     if (!nrf24JammerActive) nrf24StartJammer();
-    yield();
     sendOK("NRF24 Jammer started");
 }
 
@@ -242,7 +243,6 @@ static void handleNRF24JammerStop() {
 
 // POST /api/nrf24/scanner/start
 static void handleNRF24ScannerStart() {
-    yield();
     scannerRunning = true;
     nrf24SpecStart();
     sendOK("NRF24 Scanner started");
@@ -250,7 +250,6 @@ static void handleNRF24ScannerStart() {
 
 // POST /api/nrf24/scanner/stop
 static void handleNRF24ScannerStop() {
-    yield();
     scannerRunning = false;
     nrf24SpecStop();
     sendOK("NRF24 Scanner stopped");
@@ -270,12 +269,14 @@ static void handleNRF24ScanData() {
 
 // POST /api/cc1101/copy
 static void handleCC1101Copy() {
+    yield();
     if (!capturing) {
         capturing = true;
         captureStartTime = millis();
         cc1101StartCapture();
         capturing = false;
     }
+    yield();
     sendOK("CC1101 copy started");
 }
 
@@ -418,11 +419,13 @@ static void handleBFStatus() {
 
 // POST /api/settings/brightness?value=N
 static void handleSetBrightness() {
+    yield();
     if (!apiServer.hasArg("value")) { sendERR("Missing value"); return; }
     int val = apiServer.arg("value").toInt();
     if (val >= 0 && val <= 255) {
         screenBrightness = val;
         setBrightness(screenBrightness);
+        yield();
         sendOK("Brightness set");
     } else {
         sendERR("Invalid value (0-255)");
