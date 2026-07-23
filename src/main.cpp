@@ -15,50 +15,63 @@ bool cc1101OK = false;
 
 void setup() {
     Serial.begin(115200);
-
-    if (!displayInit()) {
-        Serial.println("OLED init failed!");
-    }
-
-    showLoading("Iniciando...", 10);
-
-    inputInit();
-    showLoading("Botoes OK", 25);
-
-    nrf24OK = nrf24Init();
-    showLoading(nrf24OK ? "NRF24 OK" : "NRF24 FAIL", 40);
-
-    cc1101OK = cc1101Init();
-    showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
-
-    // WiFi inicial como STA (como estava antes - FUNCIONAVA)
-    WiFi.mode(WIFI_STA);
-    showLoading("WiFi OK", 80);
+    delay(300);
+    Serial.println("\n[BOOT] Crazy Cat v3.1 starting...");
 
     // ============================================================
-    // AP CrazyCat para controle remoto (Termux)
-    // Adicionado DEPOIS de tudo inicializar
+    // WiFi AP PRIMEIRO (antes de tudo que possa crashar)
     // ============================================================
-    WiFi.mode(WIFI_AP_STA);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    WiFi.mode(WIFI_AP);
     delay(100);
     WiFi.softAPConfig(
         IPAddress(192, 168, 4, 1),
         IPAddress(192, 168, 4, 1),
         IPAddress(255, 255, 255, 0)
     );
-    delay(50);
-    WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
     delay(100);
+    bool apOk = WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+    delay(200);
+    Serial.printf("[BOOT] AP CrazyCat: %s\n", apOk ? "OK" : "FAIL");
+    Serial.printf("[BOOT] IP: %s\n", WiFi.softAPIP().toString().c_str());
 
     startAPIServer();
-    Serial.println("[WiFi] AP CrazyCat em 192.168.4.1:8080");
+    Serial.println("[BOOT] HTTP Server started");
 
+    // ============================================================
+    // Display (com watchdog feed)
+    // ============================================================
+    if (!displayInit()) {
+        Serial.println("[BOOT] WARNING: OLED init failed!");
+    } else {
+        Serial.println("[BOOT] OLED OK");
+    }
+    yield();
+
+    showLoading("Iniciando...", 10);
+
+    inputInit();
+    showLoading("Botoes OK", 25);
+    yield();
+
+    nrf24OK = nrf24Init();
+    showLoading(nrf24OK ? "NRF24 OK" : "NRF24 FAIL", 40);
+    yield();
+
+    cc1101OK = cc1101Init();
+    showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
+    yield();
+
+    showLoading("WiFi AP OK", 80);
     showLoading("Pronto!", 100);
     delay(500);
 
     menuInit();
+    Serial.println("[BOOT] Ready!\n");
 }
 
 void loop() {
     menuLoop();
+    yield();
 }
