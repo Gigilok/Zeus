@@ -28,3 +28,4 @@ bool bfRunning = false;
 char capturedPassword[64] = {0};
 bool passwordCaptured = false;
 bool fakeAPEnabled = false;
+bool evilTwinActive = false;
