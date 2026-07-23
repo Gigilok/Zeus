@@ -25,6 +25,9 @@ extern void goBack();
 
 // WiFi/Attacks
 extern void scanNetworks();
+extern bool isScanRunning();
+extern bool isScanComplete();
+extern void collectScanResults();
 extern uint8_t getNetworkCount();
 extern NetworkInfo* getNetwork(uint8_t);
 extern void startDeauth(uint8_t);
@@ -99,6 +102,7 @@ static void sendJSON(int code, const String& json) {
     apiServer.sendHeader("Access-Control-Allow-Origin", "*");
     apiServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     apiServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+    apiServer.sendHeader("Connection", "close");
     apiServer.send(code, "application/json", json);
 }
 
@@ -151,6 +155,10 @@ static void handleStatus() {
 
 // GET /api/networks
 static void handleNetworks() {
+    if (isScanComplete()) {
+        collectScanResults();
+    }
+    
     StaticJsonDocument<2048> doc;
     JsonArray nets = doc.createNestedArray("networks");
     for (int i = 0; i < (int)networkCount; i++) {
@@ -174,34 +182,40 @@ static void handleNetworks() {
 
 // POST /api/networks/scan
 static void handleScanNetworks() {
-    yield();
+    if (isScanRunning()) {
+        StaticJsonDocument<128> doc;
+        doc["status"] = "scanning";
+        doc["message"] = "Scan already in progress";
+        String out;
+        serializeJson(doc, out);
+        sendJSON(202, out);
+        return;
+    }
+    
     scanNetworks();
     yield();
+    
+    StaticJsonDocument<128> doc;
+    doc["status"] = "started";
+    doc["message"] = "Scan started. Poll /api/networks/scan/status to check";
+    String out;
+    serializeJson(doc, out);
+    sendJSON(202, out);
+}
 
-    StaticJsonDocument<2048> doc;
-    doc["status"] = "ok";
-    doc["message"] = "Scan complete";
+// GET /api/networks/scan/status
+static void handleScanStatus() {
+    StaticJsonDocument<256> doc;
+    doc["scanning"] = isScanRunning();
+    doc["complete"] = isScanComplete();
     doc["count"] = networkCount;
-
-    JsonArray nets = doc.createNestedArray("networks");
-    for (int i = 0; i < (int)networkCount; i++) {
-        NetworkInfo* net = &scannedNetworks[i];
-        JsonObject obj = nets.createNestedObject();
-        obj["id"] = i;
-        obj["ssid"] = net->ssid;
-        obj["channel"] = net->channel;
-        obj["rssi"] = net->rssi;
-        obj["encrypted"] = net->encrypted;
-        char bssid[18];
-        snprintf(bssid, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
-            net->bssid[0], net->bssid[1], net->bssid[2],
-            net->bssid[3], net->bssid[4], net->bssid[5]);
-        obj["bssid"] = bssid;
-    }
-
     String out;
     serializeJson(doc, out);
     sendJSON(200, out);
+    
+    if (isScanComplete()) {
+        collectScanResults();
+    }
 }
 
 // POST /api/deauth/start?id=N
@@ -252,7 +266,6 @@ static void handleHandshakeDownload() {
         sendERR("No handshake captured. Use Evil Twin first (Redes WiFi > Evil Twin)");
         return;
     }
-    // TODO: implementar download real do buffer em RAM
     sendERR("Download not yet implemented - use GET /api/handshake for status");
 }
 
@@ -490,23 +503,28 @@ static void handleButton() {
     sendOK("Button " + action + " pressed");
 }
 
-// CORS preflight
-static void handleCORS() {
-    apiServer.sendHeader("Access-Control-Allow-Origin", "*");
-    apiServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    apiServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-    apiServer.send(204);
-}
-
 // ============================================================
 // SETUP
 // ============================================================
 void startAPIServer() {
     if (apiRunning) return;
 
+    // Handler CORS global para QUALQUER rota ( resolve o problema do preflight )
+    apiServer.onNotFound([]() {
+        if (apiServer.method() == HTTP_OPTIONS) {
+            apiServer.sendHeader("Access-Control-Allow-Origin", "*");
+            apiServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            apiServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+            apiServer.send(204);
+            return;
+        }
+        sendERR("Endpoint not found: " + apiServer.uri());
+    });
+
     apiServer.on("/api/status", HTTP_GET, handleStatus);
     apiServer.on("/api/networks", HTTP_GET, handleNetworks);
     apiServer.on("/api/networks/scan", HTTP_POST, handleScanNetworks);
+    apiServer.on("/api/networks/scan/status", HTTP_GET, handleScanStatus);
     apiServer.on("/api/deauth/start", HTTP_POST, handleDeauthStart);
     apiServer.on("/api/deauth/stop", HTTP_POST, handleDeauthStop);
     apiServer.on("/api/eviltwin/start", HTTP_POST, handleEvilTwinStart);
@@ -537,8 +555,8 @@ void startAPIServer() {
     apiServer.on("/api/settings/brightness", HTTP_POST, handleSetBrightness);
     apiServer.on("/api/menu/navigate", HTTP_POST, handleMenuNavigate);
     apiServer.on("/api/btn", HTTP_POST, handleButton);
-    apiServer.on("/api/", HTTP_OPTIONS, handleCORS);
 
+    apiServer.keepAlive(false); // Evita conexões presas no Termux
     apiServer.begin();
     apiRunning = true;
     Serial.println("[API] HTTP Server started on :8080");
