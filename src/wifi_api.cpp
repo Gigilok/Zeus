@@ -1,7 +1,5 @@
 // ============================================================
 // wifi_api.cpp - Servidor HTTP REST para controle remoto
-// Roda em paralelo com todo o sistema
-// Endpoints: /api/*
 // ============================================================
 #include "wifi_api.h"
 #include "config.h"
@@ -10,21 +8,93 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 
-// Forward declarations de menu.cpp
+// ============================================================
+// FORWARD DECLARATIONS (de outros .cpp)
+// ============================================================
+// Menu
+extern MenuItem* currentMenuItems;
+extern uint8_t currentMenuItemCount;
+extern const char* currentMenuTitle;
+extern int8_t menuIndex;
+extern int8_t menuMaxIndex;
 extern bool scannerRunning;
 extern bool capturing;
 extern unsigned long captureStartTime;
-extern int8_t menuIndex;
-extern int8_t menuMaxIndex;
-extern MenuItem* currentMenuItems;
-extern uint8_t currentMenuItemCount;
+extern void enterMenu(MenuState state);
+extern void goBack();
 
+// WiFi/Attacks
+extern void scanNetworks();
+extern uint8_t getNetworkCount();
+extern NetworkInfo* getNetwork(uint8_t);
+extern void startDeauth(uint8_t);
+extern void stopDeauth();
+extern void startEvilTwin(uint8_t);
+extern void stopEvilTwin();
+extern void startFakeAP(const char*);
+extern void stopFakeAP();
+
+// NRF24
+extern bool nrf24JammerActive;
+extern void nrf24StartJammer();
+extern void nrf24StopJammer();
+extern bool nrf24IsScanning();
+extern void nrf24StartScan();
+extern void nrf24StopScan();
+extern void nrf24SpecStart();
+extern void nrf24SpecStop();
+extern const int8_t* nrf24GetScanBarData();
+extern uint32_t nrf24GetScanTotalPackets();
+extern uint8_t nrf24GetSavedCount();
+extern uint8_t nrf24GetDetectedCount();
+extern uint8_t nrf24GetAnalyzeSelected();
+
+// CC1101
+extern bool cc1101CopyActive;
+extern void cc1101StartCapture();
+extern void cc1101StopCapture();
+extern void cc1101ReplaySignal(uint8_t);
+extern uint8_t cc1101GetSavedCount();
+extern SignalData* cc1101GetSignal(uint8_t);
+
+// BT
+extern uint8_t btDeviceCount;
+extern void startBTScan();
+extern void startBTJammer(uint8_t);
+extern void stopBTJammer();
+extern uint8_t getBTDeviceCount();
+extern BTDevice* getBTDevice(uint8_t);
+
+// BruteForce
+extern bool bfRunning;
+extern void startGateBruteForce();
+extern void stopBruteForce();
+extern void startCarBruteForce(uint8_t);
+extern uint16_t getCurrentBFIndex();
+extern uint16_t getTotalBFCount(uint8_t, uint8_t);
+extern uint8_t getCarBrandCount();
+
+// Drone/Camera
+extern bool droneJammerActive;
+extern void startDroneJammer();
+extern void stopDroneJammer();
+extern bool cameraFreezeActive;
+extern void startCameraFreeze();
+extern void stopCameraFreeze();
+
+// Settings
+extern void initConnection(int);
+extern void setBrightness(uint8_t);
+
+// Display
+extern void setBrightness(uint8_t brightness);
+
+// ============================================================
+// SERVER
+// ============================================================
 static WebServer apiServer(8080);
 static bool apiRunning = false;
 
-// ============================================================
-// HELPERS JSON
-// ============================================================
 static void sendJSON(int code, const String& json) {
     apiServer.send(code, "application/json", json);
 }
@@ -51,11 +121,11 @@ static void sendERR(const String& msg) {
 // ENDPOINTS
 // ============================================================
 
-// GET /api/status - Status completo do sistema
+// GET /api/status
 static void handleStatus() {
     StaticJsonDocument<512> doc;
     doc["menu"] = (int)currentMenu;
-    doc["menu_name"] = currentMenuTitle;
+    doc["menu_name"] = currentMenuTitle ? currentMenuTitle : "";
     doc["deauth_active"] = deauthActive;
     doc["eviltwin_active"] = evilTwinActive;
     doc["handshake_status"] = getHandshakeStatus();
@@ -67,8 +137,8 @@ static void handleStatus() {
     doc["camera_freeze"] = cameraFreezeActive;
     doc["bt_jammer"] = btJammerActive;
     doc["bruteforce"] = bfRunning;
-    doc["network_count"] = getNetworkCount();
-    doc["btdevice_count"] = getBTDeviceCount();
+    doc["network_count"] = networkCount;
+    doc["btdevice_count"] = btDeviceCount;
     doc["cc1101_signals"] = cc1101GetSavedCount();
     doc["nrf24_signals"] = nrf24GetSavedCount();
     String out;
@@ -76,13 +146,12 @@ static void handleStatus() {
     sendJSON(200, out);
 }
 
-// GET /api/networks - Lista redes WiFi
+// GET /api/networks
 static void handleNetworks() {
     StaticJsonDocument<2048> doc;
     JsonArray nets = doc.createNestedArray("networks");
-    for (int i = 0; i < (int)getNetworkCount(); i++) {
-        NetworkInfo* net = getNetwork(i);
-        if (!net) continue;
+    for (int i = 0; i < (int)networkCount; i++) {
+        NetworkInfo* net = &scannedNetworks[i];
         JsonObject obj = nets.createNestedObject();
         obj["id"] = i;
         obj["ssid"] = net->ssid;
@@ -100,55 +169,43 @@ static void handleNetworks() {
     sendJSON(200, out);
 }
 
-// POST /api/networks/scan - Escanear redes
+// POST /api/networks/scan
 static void handleScanNetworks() {
     scanNetworks();
     sendOK("Scan complete");
 }
 
-// POST /api/deauth/start?id=N - Iniciar deauth
+// POST /api/deauth/start?id=N
 static void handleDeauthStart() {
-    if (!apiServer.hasArg("id")) {
-        sendERR("Missing id parameter");
-        return;
-    }
+    if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
-    if (netIdx < 0 || netIdx >= (int)getNetworkCount()) {
-        sendERR("Invalid network id");
-        return;
-    }
+    if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
     startDeauth(netIdx);
     sendOK("Deauth started");
 }
 
-// POST /api/deauth/stop - Parar deauth
+// POST /api/deauth/stop
 static void handleDeauthStop() {
     stopDeauth();
     sendOK("Deauth stopped");
 }
 
-// POST /api/eviltwin/start?id=N - Iniciar Evil Twin + Handshake
+// POST /api/eviltwin/start?id=N
 static void handleEvilTwinStart() {
-    if (!apiServer.hasArg("id")) {
-        sendERR("Missing id parameter");
-        return;
-    }
+    if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
-    if (netIdx < 0 || netIdx >= (int)getNetworkCount()) {
-        sendERR("Invalid network id");
-        return;
-    }
+    if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
     startEvilTwin(netIdx);
     sendOK("Evil Twin started");
 }
 
-// POST /api/eviltwin/stop - Parar Evil Twin
+// POST /api/eviltwin/stop
 static void handleEvilTwinStop() {
     stopEvilTwin();
     sendOK("Evil Twin stopped");
 }
 
-// GET /api/handshake - Status do handshake
+// GET /api/handshake
 static void handleHandshakeStatus() {
     StaticJsonDocument<256> doc;
     doc["capturing"] = isHandshakeCapturing();
@@ -160,31 +217,17 @@ static void handleHandshakeStatus() {
     sendJSON(200, out);
 }
 
-// GET /api/handshake/download - Baixar handshake como .cap
+// GET /api/handshake/download
 static void handleHandshakeDownload() {
     if (getHandshakeMessageCount() == 0) {
         sendERR("No handshake captured");
         return;
     }
-
-    // PCAP Global Header
-    uint8_t pcapHeader[24] = {
-        0xD4, 0xC3, 0xB2, 0xA1, 0x02, 0x00, 0x04, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xFF, 0xFF, 0x00, 0x00, 0x69, 0x00, 0x00, 0x00
-    };
-
-    apiServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    apiServer.send(200, "application/vnd.tcpdump.pcap", "");
-    apiServer.sendContent((const char*)pcapHeader, 24);
-
-    // Frames EAPOL (acessar diretamente do buffer interno)
-    // Precisamos exportar uma funcao do wifi_handshake.cpp
-    // Por enquanto, enviamos um placeholder
-    apiServer.sendContent("", 0);
+    // TODO: implementar download real do buffer em RAM
+    sendERR("Download not yet implemented - use GET /api/handshake for status");
 }
 
-// POST /api/nrf24/jammer/start - NRF24 Jammer
+// POST /api/nrf24/jammer/start
 static void handleNRF24JammerStart() {
     if (!nrf24JammerActive) nrf24StartJammer();
     sendOK("NRF24 Jammer started");
@@ -210,7 +253,7 @@ static void handleNRF24ScannerStop() {
     sendOK("NRF24 Scanner stopped");
 }
 
-// GET /api/nrf24/scan - Dados do scanner
+// GET /api/nrf24/scan
 static void handleNRF24ScanData() {
     StaticJsonDocument<512> doc;
     const int8_t* bars = nrf24GetScanBarData();
@@ -222,7 +265,7 @@ static void handleNRF24ScanData() {
     sendJSON(200, out);
 }
 
-// POST /api/cc1101/copy - Copiar sinal
+// POST /api/cc1101/copy
 static void handleCC1101Copy() {
     if (!capturing) {
         capturing = true;
@@ -235,10 +278,7 @@ static void handleCC1101Copy() {
 
 // POST /api/cc1101/replay?id=N
 static void handleCC1101Replay() {
-    if (!apiServer.hasArg("id")) {
-        sendERR("Missing id");
-        return;
-    }
+    if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int idx = apiServer.arg("id").toInt();
     if (idx < (int)cc1101GetSavedCount()) {
         cc1101ReplaySignal(idx);
@@ -300,7 +340,7 @@ static void handleBTScan() {
 static void handleBTDevices() {
     StaticJsonDocument<1024> doc;
     JsonArray arr = doc.createNestedArray("devices");
-    for (int i = 0; i < (int)getBTDeviceCount(); i++) {
+    for (int i = 0; i < (int)btDeviceCount; i++) {
         BTDevice* dev = getBTDevice(i);
         if (!dev) continue;
         JsonObject obj = arr.createNestedObject();
@@ -315,12 +355,9 @@ static void handleBTDevices() {
 
 // POST /api/attack/bt/jammer/start?id=N
 static void handleBTJammerStart() {
-    if (!apiServer.hasArg("id")) {
-        sendERR("Missing id");
-        return;
-    }
+    if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int idx = apiServer.arg("id").toInt();
-    if (idx < (int)getBTDeviceCount()) {
+    if (idx < (int)btDeviceCount) {
         startBTJammer(idx);
         sendOK("BT jammer started");
     } else {
@@ -348,10 +385,7 @@ static void handleBFGateStop() {
 
 // POST /api/attack/bf/car/start?brand=N
 static void handleBFCarStart() {
-    if (!apiServer.hasArg("brand")) {
-        sendERR("Missing brand");
-        return;
-    }
+    if (!apiServer.hasArg("brand")) { sendERR("Missing brand"); return; }
     int brand = apiServer.arg("brand").toInt();
     if (brand < getCarBrandCount()) {
         if (!bfRunning) startCarBruteForce(brand);
@@ -381,10 +415,7 @@ static void handleBFStatus() {
 
 // POST /api/settings/brightness?value=N
 static void handleSetBrightness() {
-    if (!apiServer.hasArg("value")) {
-        sendERR("Missing value");
-        return;
-    }
+    if (!apiServer.hasArg("value")) { sendERR("Missing value"); return; }
     int val = apiServer.arg("value").toInt();
     if (val >= 0 && val <= 255) {
         screenBrightness = val;
@@ -397,10 +428,7 @@ static void handleSetBrightness() {
 
 // POST /api/menu/navigate?to=MENU_NAME
 static void handleMenuNavigate() {
-    if (!apiServer.hasArg("to")) {
-        sendERR("Missing to parameter");
-        return;
-    }
+    if (!apiServer.hasArg("to")) { sendERR("Missing to"); return; }
     String target = apiServer.arg("to");
     if (target == "MAIN") enterMenu(MENU_MAIN);
     else if (target == "NRF24") enterMenu(MENU_NRF24);
@@ -408,19 +436,13 @@ static void handleMenuNavigate() {
     else if (target == "ATTACKS") enterMenu(MENU_ATTACKS);
     else if (target == "NETWORKS") enterMenu(MENU_NETWORKS);
     else if (target == "SETTINGS") enterMenu(MENU_SETTINGS);
-    else {
-        sendERR("Unknown menu");
-        return;
-    }
+    else { sendERR("Unknown menu"); return; }
     sendOK("Menu changed");
 }
 
 // POST /api/btn?action=UP|DOWN|SELECT|BACK
 static void handleButton() {
-    if (!apiServer.hasArg("action")) {
-        sendERR("Missing action");
-        return;
-    }
+    if (!apiServer.hasArg("action")) { sendERR("Missing action"); return; }
     String action = apiServer.arg("action");
     if (action == "UP") {
         if (menuIndex > 0) menuIndex--;
@@ -431,10 +453,7 @@ static void handleButton() {
             enterMenu(currentMenuItems[menuIndex].state);
     } else if (action == "BACK") {
         goBack();
-    } else {
-        sendERR("Unknown action");
-        return;
-    }
+    } else { sendERR("Unknown action"); return; }
     sendOK("Button " + action + " pressed");
 }
 
@@ -485,8 +504,6 @@ void startAPIServer() {
     apiServer.on("/api/settings/brightness", HTTP_POST, handleSetBrightness);
     apiServer.on("/api/menu/navigate", HTTP_POST, handleMenuNavigate);
     apiServer.on("/api/btn", HTTP_POST, handleButton);
-
-    // CORS
     apiServer.on("/api/", HTTP_OPTIONS, handleCORS);
 
     apiServer.begin();
