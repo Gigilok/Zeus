@@ -180,30 +180,28 @@ void scanNetworks() {
     networkCount = 0;
     Serial.println("[WiFi] Starting network scan...");
 
-    // AP_STA async scan is buggy on ESP32. Use STA sync scan and quickly restore AP.
+    // Remember if we had an AP running
     bool hadAP = (WiFi.getMode() == WIFI_AP_STA || WiFi.getMode() == WIFI_AP);
 
     // Switch to STA for reliable scan
     WiFi.mode(WIFI_STA);
     delay(200);
 
-    // Synchronous scan with 2 second timeout per channel
+    // Synchronous scan with 5 second timeout
     int n = WiFi.scanNetworks(false, true, false, 5000);
-    Serial.printf("[WiFi] Scan found %d networks
-", n);
+    Serial.printf("[WiFi] Scan found %d networks\n", n);
 
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
         for (int i = 0; i < networkCount; i++) {
             strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 31);
-            scannedNetworks[i].ssid[31] = '';
+            scannedNetworks[i].ssid[31] = '\0';
             memcpy(scannedNetworks[i].bssid, WiFi.BSSID(i), 6);
             scannedNetworks[i].rssi = WiFi.RSSI(i);
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
             scannedNetworks[i].id = i;
-            Serial.printf("  [%d] %s CH%d %ddBm %s
-", i, scannedNetworks[i].ssid, 
+            Serial.printf("  [%d] %s CH%d %ddBm %s\n", i, scannedNetworks[i].ssid, 
                          scannedNetworks[i].channel, scannedNetworks[i].rssi,
                          scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
         }
@@ -211,8 +209,7 @@ void scanNetworks() {
     } else if (n == 0) {
         Serial.println("[WiFi] No networks found");
     } else {
-        Serial.printf("[WiFi] Scan error: %d
-", n);
+        Serial.printf("[WiFi] Scan error: %d\n", n);
     }
 
     // Restore CrazyCat AP immediately
@@ -228,31 +225,7 @@ void scanNetworks() {
         delay(50);
         WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
         delay(200);
-        Serial.printf("[WiFi] AP restored: %s
-", WiFi.softAPIP().toString().c_str());
-    }
-}
-    // Async scan to prevent watchdog
-    WiFi.scanNetworks(true, true);
-    int16_t n = 0;
-    unsigned long start = millis();
-    while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING) {
-        yield();
-        delay(10);
-        if (millis() - start > 10000) break;
-    }
-    Serial.printf("[WiFi] Scan found %d networks\n", n);
-    if (n > 0) {
-        for (int i = 0; i < n && i < MAX_NETWORKS; i++) {
-            strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 32);
-            scannedNetworks[i].ssid[32] = '\0';
-            memcpy(scannedNetworks[i].bssid, WiFi.BSSID(i), 6);
-            scannedNetworks[i].rssi = WiFi.RSSI(i);
-            scannedNetworks[i].channel = WiFi.channel(i);
-            scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-            networkCount++;
-        }
-        WiFi.scanDelete();
+        Serial.printf("[WiFi] AP restored: %s\n", WiFi.softAPIP().toString().c_str());
     }
 }
 
