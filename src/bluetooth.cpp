@@ -2,8 +2,10 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <BluetoothSerial.h>
 #include "config.h"
 
+BluetoothSerial SerialBT;
 BLEScan* bleScan = nullptr;
 bool bleScanning = false;
 
@@ -33,6 +35,10 @@ bool bluetoothInit() {
     bleScan->setActiveScan(true);
     bleScan->setInterval(100);
     bleScan->setWindow(99);
+
+    // Inicia Bluetooth Serial para transferencia de handshake
+    SerialBT.begin("CrazyCat-BT");
+    Serial.println("[BT] Serial ready: CrazyCat-BT");
     return true;
 }
 
