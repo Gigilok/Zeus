@@ -178,22 +178,33 @@ static bool isSoftAPActive() {
 // ============================================================
 void scanNetworks() {
     networkCount = 0;
-    if (WiFi.getMode() != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
+    // Keep AP active for Termux controller connection!
+    if (WiFi.getMode() == WIFI_AP) {
+        WiFi.mode(WIFI_AP_STA);
+        delay(100);
     }
-    delay(100);
-    int n = WiFi.scanNetworks(false, true);
+    // Async scan to prevent watchdog
+    WiFi.scanNetworks(true, true);
+    int16_t n = 0;
+    unsigned long start = millis();
+    while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING) {
+        yield();
+        delay(10);
+        if (millis() - start > 10000) break;
+    }
     Serial.printf("[WiFi] Scan found %d networks\n", n);
-    for (int i = 0; i < n && i < MAX_NETWORKS; i++) {
-        strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 32);
-        scannedNetworks[i].ssid[32] = '\0';
-        memcpy(scannedNetworks[i].bssid, WiFi.BSSID(i), 6);
-        scannedNetworks[i].rssi = WiFi.RSSI(i);
-        scannedNetworks[i].channel = WiFi.channel(i);
-        scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-        networkCount++;
+    if (n > 0) {
+        for (int i = 0; i < n && i < MAX_NETWORKS; i++) {
+            strncpy(scannedNetworks[i].ssid, WiFi.SSID(i).c_str(), 32);
+            scannedNetworks[i].ssid[32] = '\0';
+            memcpy(scannedNetworks[i].bssid, WiFi.BSSID(i), 6);
+            scannedNetworks[i].rssi = WiFi.RSSI(i);
+            scannedNetworks[i].channel = WiFi.channel(i);
+            scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+            networkCount++;
+        }
+        WiFi.scanDelete();
     }
-    WiFi.scanDelete();
 }
 
 uint8_t getNetworkCount() { return networkCount; }
@@ -282,7 +293,8 @@ static void restartBssidClone() {
     }
 }
 
-static void restoreCrazyCatAP() {
+static 
+void restoreCrazyCatAP() {
     WiFi.mode(WIFI_AP_STA);
     delay(200);
     WiFi.softAPConfig(
@@ -307,9 +319,6 @@ void stopBssidClone() {
     delay(200);
     esp_wifi_set_mac(WIFI_IF_AP, originalAPMac);
     delay(100);
-    WiFi.mode(WIFI_OFF);
-    delay(200);
-    // Restore CrazyCat AP instead of leaving in STA mode
     restoreCrazyCatAP();
     bssidCloneActive = false;
     Serial.println("[Clone] Stopped, MAC restored, CrazyCat AP active");
