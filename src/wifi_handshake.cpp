@@ -7,7 +7,6 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <sys/time.h>
-#include <BluetoothSerial.h>
 
 // ============================================================
 // CONFIGURACOES
@@ -195,39 +194,6 @@ const char* getHandshakeStatus() { return handshakeStatus; }
 uint8_t getHandshakeMessageCount() { return eapolCount; }
 bool isHandshakeComplete() { return handshakeComplete; }
 
-// ============================================================
-// ENVIAR HANDSHAKE VIA BT SERIAL (SEM ARQUIVO)
-// ============================================================
-extern BluetoothSerial SerialBT;
-
-void sendHandshakeViaBluetooth() {
-    if (eapolCount == 0) {
-        SerialBT.println("ERR:NO_HANDSHAKE");
-        return;
-    }
-    if (!SerialBT.hasClient()) {
-        SerialBT.println("ERR:NO_BT_CLIENT");
-        return;
-    }
-
-    SerialBT.println("--- HANDSHAKE_START ---");
-    SerialBT.printf("FRAMES:%d\n", eapolCount);
-    SerialBT.printf("MESSAGES:%d\n", messagesFound);
-
-    // Envia cada frame como base64
-    for (int i = 0; i < eapolCount; i++) {
-        EapolFrame* ef = &eapolBuffer[i];
-        SerialBT.printf("FRAME:%d:MSG:%d:LEN:%d:", i, ef->msgType, ef->len);
-
-        char b64[(MAX_FRAME_SIZE * 4 / 3) + 8];
-        base64Encode(ef->data, ef->len, b64);
-        SerialBT.println(b64);
-        delay(20);
-    }
-
-    SerialBT.println("--- HANDSHAKE_END ---");
-    Serial.printf("[HS] Sent %d frames via BT\n", eapolCount);
-}
 
 // ============================================================
 // LIMPAR BUFFER
