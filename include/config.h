@@ -148,6 +148,7 @@ extern const char* getHandshakeStatus();
 extern uint8_t getHandshakeMessageCount();
 extern bool isHandshakeComplete();
 extern bool saveHandshakeToFile(const char* filename);
+extern bool sendHandshakeViaBluetooth(const char* filename);
 extern size_t getHandshakeFileSize(const char* filename);
 extern void serveHandshakeHTTP();
 
