@@ -10,8 +10,6 @@ bool isHandshakeCapturing();
 const char* getHandshakeStatus();
 uint8_t getHandshakeMessageCount();
 bool isHandshakeComplete();
-
-void sendHandshakeViaBluetooth();
 void clearHandshakeBuffer();
 
 #endif
