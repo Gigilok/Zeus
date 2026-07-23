@@ -156,10 +156,6 @@ extern void clearHandshakeBuffer();
 // ============================================================
 // MENU STRUCTURES
 // ============================================================
-struct MenuItem {
-    const char* label;
-    MenuState state;
-};
 
 MenuItem mainMenu[] = {
     {"NRF24", MENU_NRF24},
