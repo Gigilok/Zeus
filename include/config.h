@@ -109,11 +109,6 @@ extern uint8_t networkCount;
 extern uint8_t btDeviceCount;
 extern uint8_t remoteDeviceCount;
 
-struct MenuItem {
-    const char* label;
-    MenuState state;
-};
-
 extern MenuState currentMenu;
 extern MenuState previousMenu;
 extern int8_t menuIndex;
@@ -148,7 +143,6 @@ extern const char* getHandshakeStatus();
 extern uint8_t getHandshakeMessageCount();
 extern bool isHandshakeComplete();
 extern bool saveHandshakeToFile(const char* filename);
-extern bool sendHandshakeViaBluetooth(const char* filename);
 extern size_t getHandshakeFileSize(const char* filename);
 extern void serveHandshakeHTTP();
 
