@@ -556,7 +556,6 @@ void startAPIServer() {
     apiServer.on("/api/menu/navigate", HTTP_POST, handleMenuNavigate);
     apiServer.on("/api/btn", HTTP_POST, handleButton);
 
-    apiServer.keepAlive(false); // Evita conexões presas no Termux
     apiServer.begin();
     apiRunning = true;
     Serial.println("[API] HTTP Server started on :8080");
