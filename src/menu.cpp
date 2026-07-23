@@ -1,4 +1,5 @@
 #include "config.h"
+#include "wifi_api.h"
 #include <WiFi.h>
 #include <Adafruit_SSD1306.h>
 
@@ -11,6 +12,7 @@ struct NRFDevice {
 // ============================================================
 // FORWARD DECLARATIONS
 // ============================================================
+extern BluetoothSerial SerialBT;
 extern void clearDisplay();
 extern void updateDisplay();
 extern void drawMenuHeader(const char* title);
@@ -141,9 +143,14 @@ extern bool isConnectionActive();
 extern const char* getConnectionTypeName();
 extern const char* getPairingCode();
 
-extern void portalLoop();
-extern void stopEvilTwin();
-extern const char* getPortalStatus();
+extern void startHandshakeCapture();
+extern void stopHandshakeCapture();
+extern bool isHandshakeCapturing();
+extern const char* getHandshakeStatus();
+extern uint8_t getHandshakeMessageCount();
+extern bool isHandshakeComplete();
+extern void sendHandshakeViaBluetooth();
+extern void clearHandshakeBuffer();
 
 
 // ============================================================
@@ -226,7 +233,7 @@ void enterMenu(MenuState state) {
 }
 
 static int analyzeScrollIndex = 0;
-static bool scannerRunning = false;
+bool scannerRunning = false;
 
 void goBack() {
     switch (currentMenu) {
@@ -253,7 +260,7 @@ void goBack() {
     if (droneJammerActive) stopDroneJammer();
     if (btJammerActive) stopBTJammer();
     if (bfRunning) stopBruteForce();
-    if (evilTwinActive) stopEvilTwin();
+    if (isHandshakeCapturing()) stopHandshakeCapture();
     if (capturing) { cc1101StopCapture(); capturing = false; }
     if (inListView) inListView = false;
     deauthDetailView = false;
@@ -655,35 +662,41 @@ void renderPassword() {
         updateDisplay();
         return;
     }
-    if (passwordCaptured) {
+    if (isHandshakeComplete()) {
         clearDisplay();
-        drawMenuHeader("SENHA!");
+        drawMenuHeader("HANDSHAKE!");
         NetworkInfo* net = getNetwork(listIndex);
         if (net) {
             char buf[64];
             snprintf(buf, 64, "Rede: %s", net->ssid);
-            drawText(0, 14, buf, 1);
+            drawText(0, 12, buf, 1);
         }
         char buf[64];
-        snprintf(buf, 64, "Pass: %s", capturedPassword);
-        drawText(0, 28, buf, 1);
-        drawCenteredText(50, "SEL: Nova", 1);
+        snprintf(buf, 64, "EAPOL: %d frames", getHandshakeMessageCount());
+        drawText(0, 24, buf, 1);
+        drawCenteredText(38, "Handshakes OK!", 1);
+        drawCenteredText(50, "SEL: Salvar/Enviar", 1);
         updateDisplay();
-    } else if (fakeAPEnabled) {
+    } else if (evilTwinActive) {
         clearDisplay();
-        drawMenuHeader("AGUARDANDO...");
+        drawMenuHeader("HANDSHAKE");
         NetworkInfo* net = getNetwork(listIndex);
         if (net) {
             char buf[64];
             snprintf(buf, 64, "Clone: %s", net->ssid);
-            drawText(0, 14, buf, 1);
+            drawText(0, 12, buf, 1);
         }
-        drawCenteredText(30, "Aguardando vitima", 1);
-        drawCenteredText(42, getPortalStatus(), 1);
+        char buf[64];
+        snprintf(buf, 64, "Status: %s", getHandshakeStatus());
+        drawText(0, 24, buf, 1);
         int clients = WiFi.softAPgetStationNum();
         char clientBuf[32];
         snprintf(clientBuf, 32, "Clientes: %d", clients);
-        drawCenteredText(54, clientBuf, 1);
+        drawText(0, 36, clientBuf, 1);
+        uint32_t pkts = getDeauthPacketCount();
+        char pktBuf[32];
+        snprintf(pktBuf, 32, "Deauth: %lu", pkts);
+        drawText(0, 48, pktBuf, 1);
         updateDisplay();
     } else {
         renderList("CAPTURAR SENHA", getNetworkCount(), drawNetworkItem);
@@ -692,12 +705,14 @@ void renderPassword() {
 
 void handlePassword(ButtonState btn) {
     if (btn == BTN_PRESSED_SELECT) {
-        if (!fakeAPEnabled && !passwordCaptured && listIndex < (int)getNetworkCount()) {
+        if (!evilTwinActive && !isHandshakeComplete() && listIndex < (int)getNetworkCount()) {
             startEvilTwin(listIndex);
-        } else if (passwordCaptured) {
-            passwordCaptured = false;
-            stopEvilTwin();
-        } else if (fakeAPEnabled) {
+        } else if (isHandshakeComplete()) {
+            // Salva e envia o handshake
+            sendHandshakeViaBluetooth();
+            showMessage("HANDSHAKE", "Enviado via BT!");
+            delay(1000);
+        } else if (evilTwinActive) {
             stopEvilTwin();
         }
     }
@@ -1151,11 +1166,435 @@ void menuInit() {
     enterMenu(MENU_MAIN);
 }
 
-void menuLoop() {
-    // Portal captive loop (quando evil twin ativo)
-    if (evilTwinActive || isPortalActive()) {
-        portalLoop();
+
+// ============================================================
+// CONTROLE REMOTO BLUETOOTH (Termux)
+// Todos os comandos do menu disponiveis via BT Serial
+// ============================================================
+void btSendStatus() {
+    if (!SerialBT.hasClient()) return;
+    SerialBT.println("--- STATUS_START ---");
+    SerialBT.printf("MENU:%d\n", (int)currentMenu);
+    SerialBT.printf("MENU_INDEX:%d\n", menuIndex);
+    SerialBT.printf("DEAUTH:%s\n", deauthActive ? "ON" : "OFF");
+    SerialBT.printf("EVILTWIN:%s\n", evilTwinActive ? "ON" : "OFF");
+    SerialBT.printf("HANDSHAKE:%s\n", isHandshakeComplete() ? "OK" : getHandshakeStatus());
+    SerialBT.printf("NRF24_JAM:%s\n", nrf24JammerActive ? "ON" : "OFF");
+    SerialBT.printf("NRF24_SCAN:%s\n", nrf24IsScanning() ? "ON" : "OFF");
+    SerialBT.printf("CC1101_CAP:%s\n", cc1101CopyActive ? "ON" : "OFF");
+    SerialBT.printf("DRONE_JAM:%s\n", droneJammerActive ? "ON" : "OFF");
+    SerialBT.printf("CAM_FREEZE:%s\n", cameraFreezeActive ? "ON" : "OFF");
+    SerialBT.printf("BT_JAM:%s\n", btJammerActive ? "ON" : "OFF");
+    SerialBT.printf("BF:%s\n", bfRunning ? "ON" : "OFF");
+    SerialBT.printf("NETWORKS:%d\n", getNetworkCount());
+    SerialBT.printf("BTDEVICES:%d\n", getBTDeviceCount());
+    SerialBT.printf("CC1101_SIG:%d\n", cc1101GetSavedCount());
+    SerialBT.printf("NRF24_SIG:%d\n", nrf24GetSavedCount());
+    SerialBT.println("--- STATUS_END ---");
+}
+
+void btSendNetworks() {
+    if (!SerialBT.hasClient()) return;
+    SerialBT.printf("NETWORKS:%d\n", getNetworkCount());
+    for (int i = 0; i < (int)getNetworkCount(); i++) {
+        NetworkInfo* net = getNetwork(i);
+        if (net) {
+            SerialBT.printf("NET:%d:%s:CH%d:RSSI%d:%s:%02X%02X%02X%02X%02X%02X\n",
+                i, net->ssid, net->channel, net->rssi,
+                net->encrypted ? "WPA2" : "OPEN",
+                net->bssid[0], net->bssid[1], net->bssid[2],
+                net->bssid[3], net->bssid[4], net->bssid[5]);
+        }
     }
+    SerialBT.println("--- NETWORKS_END ---");
+}
+
+void btSendBTDevices() {
+    if (!SerialBT.hasClient()) return;
+    SerialBT.printf("BTDEVICES:%d\n", getBTDeviceCount());
+    for (int i = 0; i < (int)getBTDeviceCount(); i++) {
+        BTDevice* dev = getBTDevice(i);
+        if (dev) {
+            SerialBT.printf("BT:%d:%s:RSSI%d:%02X%02X%02X%02X%02X%02X\n",
+                i, dev->name, dev->rssi,
+                dev->address[0], dev->address[1], dev->address[2],
+                dev->address[3], dev->address[4], dev->address[5]);
+        }
+    }
+    SerialBT.println("--- BTDEVICES_END ---");
+}
+
+void btSendCC1101Signals() {
+    if (!SerialBT.hasClient()) return;
+    SerialBT.printf("CC1101_SIG:%d\n", cc1101GetSavedCount());
+    for (int i = 0; i < (int)cc1101GetSavedCount(); i++) {
+        SignalData* sig = cc1101GetSignal(i);
+        if (sig && sig->valid) {
+            SerialBT.printf("SIG:%d:%s:%luMHz\n",
+                i, sig->name, sig->frequency / 1000000);
+        }
+    }
+    SerialBT.println("--- CC1101_END ---");
+}
+
+void btSendNRF24Scan() {
+    if (!SerialBT.hasClient()) return;
+    const int8_t* bars = nrf24GetScanBarData();
+    SerialBT.print("NRF24_SCAN:");
+    for (int i = 0; i < 16; i++) {
+        SerialBT.printf("%d", bars[i]);
+        if (i < 15) SerialBT.print(",");
+    }
+    SerialBT.println();
+    SerialBT.printf("NRF24_PKTS:%lu\n", nrf24GetScanTotalPackets());
+    SerialBT.println("--- NRF24_SCAN_END ---");
+}
+
+void btSendNRF24Analyze() {
+    if (!SerialBT.hasClient()) return;
+    uint8_t dcount = nrf24GetDetectedCount();
+    SerialBT.printf("NRF24_DETECTED:%d\n", dcount);
+    for (int i = 0; i < dcount; i++) {
+        DetectedSignal* sig = nrf24GetDetected(i);
+        if (sig && sig->active) {
+            SerialBT.printf("NRF24_DEV:%d:CH%d:RSSI%d\n",
+                i, sig->channel, sig->rssi);
+        }
+    }
+    SerialBT.println("--- NRF24_ANALYZE_END ---");
+}
+
+void btSendBruteForceStatus() {
+    if (!SerialBT.hasClient()) return;
+    SerialBT.printf("BF_RUNNING:%s\n", bfRunning ? "ON" : "OFF");
+    SerialBT.printf("BF_INDEX:%d\n", getCurrentBFIndex());
+    SerialBT.printf("BF_TOTAL:%d\n", getTotalBFCount(0, 0));
+    SerialBT.printf("BF_BRANDS:%d\n", getCarBrandCount());
+    for (int i = 0; i < getCarBrandCount(); i++) {
+        SerialBT.printf("BF_BRAND:%d:%s:%d\n",
+            i, getCarBrandName(i), getTotalBFCount(1, i));
+    }
+    SerialBT.println("--- BF_END ---");
+}
+
+// ============================================================
+// PARSER PRINCIPAL
+// ============================================================
+void processBTCommands() {
+    if (!SerialBT.hasClient()) return;
+
+    while (SerialBT.available()) {
+        String cmd = SerialBT.readStringUntil('\n');
+        cmd.trim();
+        if (cmd.length() == 0) continue;
+
+        Serial.printf("[BT-CMD] %s\n", cmd.c_str());
+
+        // === NAVEGACAO VIRTUAL (botoes) ===
+        if (cmd == "BTN:UP") {
+            ButtonState btn = BTN_PRESSED_UP;
+            // Simula botao UP no menu atual
+            switch (currentMenu) {
+                case MENU_MAIN: case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS:
+                case MENU_ATTACK_DRONE: case MENU_ATTACK_CAMERA: case MENU_ATTACK_BRUTEFORCE:
+                case MENU_NETWORKS: case MENU_SETTINGS:
+                    if (menuIndex > 0) menuIndex--; break;
+                default: break;
+            }
+            SerialBT.println("OK:BTN_UP");
+        }
+        else if (cmd == "BTN:DOWN") {
+            if (menuIndex < menuMaxIndex) menuIndex++;
+            SerialBT.println("OK:BTN_DOWN");
+        }
+        else if (cmd == "BTN:SELECT") {
+            switch (currentMenu) {
+                case MENU_MAIN: case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS:
+                case MENU_ATTACK_DRONE: case MENU_ATTACK_CAMERA: case MENU_ATTACK_BRUTEFORCE:
+                case MENU_NETWORKS: case MENU_SETTINGS:
+                    if (currentMenuItems && menuIndex < (int)currentMenuItemCount)
+                        enterMenu(currentMenuItems[menuIndex].state);
+                    break;
+                default: break;
+            }
+            SerialBT.println("OK:BTN_SELECT");
+        }
+        else if (cmd == "BTN:BACK") {
+            goBack();
+            SerialBT.println("OK:BTN_BACK");
+        }
+
+        // === MENUS DIRETOS ===
+        else if (cmd == "MENU:MAIN") { enterMenu(MENU_MAIN); SerialBT.println("OK:MENU_MAIN"); }
+        else if (cmd == "MENU:NRF24") { enterMenu(MENU_NRF24); SerialBT.println("OK:MENU_NRF24"); }
+        else if (cmd == "MENU:CC1101") { enterMenu(MENU_CC1101); SerialBT.println("OK:MENU_CC1101"); }
+        else if (cmd == "MENU:ATTACKS") { enterMenu(MENU_ATTACKS); SerialBT.println("OK:MENU_ATTACKS"); }
+        else if (cmd == "MENU:NETWORKS") { enterMenu(MENU_NETWORKS); SerialBT.println("OK:MENU_NETWORKS"); }
+        else if (cmd == "MENU:SETTINGS") { enterMenu(MENU_SETTINGS); SerialBT.println("OK:MENU_SETTINGS"); }
+
+        // === NRF24 ===
+        else if (cmd == "NRF24:JAMMER:START") {
+            if (!nrf24JammerActive) nrf24StartJammer();
+            enterMenu(MENU_NRF24_JAMMER);
+            SerialBT.println("OK:NRF24_JAMMER_ON");
+        }
+        else if (cmd == "NRF24:JAMMER:STOP") {
+            nrf24StopJammer();
+            SerialBT.println("OK:NRF24_JAMMER_OFF");
+        }
+        else if (cmd == "NRF24:SCANNER:START") {
+            scannerRunning = true;
+            nrf24SpecStart();
+            enterMenu(MENU_NRF24_SCANNER);
+            SerialBT.println("OK:NRF24_SCANNER_ON");
+        }
+        else if (cmd == "NRF24:SCANNER:STOP") {
+            scannerRunning = false;
+            nrf24SpecStop();
+            SerialBT.println("OK:NRF24_SCANNER_OFF");
+        }
+        else if (cmd == "NRF24:ANALYZE") {
+            enterMenu(MENU_NRF24_ANALYZE);
+            SerialBT.println("OK:NRF24_ANALYZE");
+        }
+
+        // === CC1101 ===
+        else if (cmd == "CC1101:COPY:START") {
+            if (!capturing) {
+                capturing = true;
+                captureStartTime = millis();
+                cc1101StartCapture();
+                capturing = false;
+            }
+            enterMenu(MENU_CC1101_COPY);
+            SerialBT.println("OK:CC1101_COPY");
+        }
+        else if (cmd == "CC1101:COPY:STOP") {
+            cc1101StopCapture();
+            capturing = false;
+            SerialBT.println("OK:CC1101_COPY_STOP");
+        }
+        else if (cmd.startsWith("CC1101:REPLAY:")) {
+            int idx = cmd.substring(14).toInt();
+            if (idx < (int)cc1101GetSavedCount()) {
+                cc1101ReplaySignal(idx);
+                SerialBT.println("OK:CC1101_REPLAY");
+            } else {
+                SerialBT.println("ERR:INVALID_SIGNAL");
+            }
+        }
+
+        // === ATAQUES ===
+        else if (cmd == "ATTACK:DRONE:JAMMER:START") {
+            if (!droneJammerActive) startDroneJammer();
+            enterMenu(MENU_ATTACK_DRONE_JAMMER);
+            SerialBT.println("OK:DRONE_JAMMER_ON");
+        }
+        else if (cmd == "ATTACK:DRONE:JAMMER:STOP") {
+            stopDroneJammer();
+            SerialBT.println("OK:DRONE_JAMMER_OFF");
+        }
+        else if (cmd == "ATTACK:DRONE:REMOTE") {
+            enterMenu(MENU_ATTACK_DRONE_REMOTE);
+            SerialBT.println("OK:DRONE_REMOTE");
+        }
+        else if (cmd == "ATTACK:DRONE:LOCATE") {
+            enterMenu(MENU_ATTACK_DRONE_LOCATE);
+            SerialBT.println("OK:DRONE_LOCATE");
+        }
+        else if (cmd.startsWith("ATTACK:DEAUTH:")) {
+            int netIdx = cmd.substring(14).toInt();
+            if (netIdx >= 0 && netIdx < (int)getNetworkCount()) {
+                startDeauth(netIdx);
+                enterMenu(MENU_ATTACK_DEAUTH);
+                SerialBT.println("OK:DEAUTH_STARTED");
+            } else {
+                SerialBT.println("ERR:INVALID_NETWORK");
+            }
+        }
+        else if (cmd == "ATTACK:DEAUTH:STOP") {
+            stopDeauth();
+            SerialBT.println("OK:DEAUTH_STOPPED");
+        }
+        else if (cmd == "ATTACK:CAMERA:FREEZE:START") {
+            if (!cameraFreezeActive) startCameraFreeze();
+            enterMenu(MENU_ATTACK_CAMERA_FREEZE);
+            SerialBT.println("OK:CAMERA_FREEZE_ON");
+        }
+        else if (cmd == "ATTACK:CAMERA:FREEZE:STOP") {
+            stopCameraFreeze();
+            SerialBT.println("OK:CAMERA_FREEZE_OFF");
+        }
+        else if (cmd == "ATTACK:BLUETOOTH:SCAN") {
+            btDeviceCount = 0;
+            startBTScan();
+            enterMenu(MENU_ATTACK_BLUETOOTH);
+            SerialBT.println("OK:BT_SCAN");
+        }
+        else if (cmd.startsWith("ATTACK:BLUETOOTH:JAMMER:")) {
+            int devIdx = cmd.substring(24).toInt();
+            if (devIdx < (int)getBTDeviceCount()) {
+                startBTJammer(devIdx);
+                SerialBT.println("OK:BT_JAMMER_ON");
+            } else {
+                SerialBT.println("ERR:INVALID_DEVICE");
+            }
+        }
+        else if (cmd == "ATTACK:BLUETOOTH:JAMMER:STOP") {
+            stopBTJammer();
+            SerialBT.println("OK:BT_JAMMER_OFF");
+        }
+        else if (cmd == "ATTACK:BF:GATE:START") {
+            if (!bfRunning) startGateBruteForce();
+            enterMenu(MENU_ATTACK_BF_GATE);
+            SerialBT.println("OK:BF_GATE_STARTED");
+        }
+        else if (cmd == "ATTACK:BF:GATE:STOP") {
+            stopBruteForce();
+            SerialBT.println("OK:BF_GATE_STOPPED");
+        }
+        else if (cmd.startsWith("ATTACK:BF:CAR:START:")) {
+            int brandIdx = cmd.substring(20).toInt();
+            if (brandIdx < getCarBrandCount()) {
+                if (!bfRunning) startCarBruteForce(brandIdx);
+                enterMenu(MENU_ATTACK_BF_CAR);
+                SerialBT.println("OK:BF_CAR_STARTED");
+            } else {
+                SerialBT.println("ERR:INVALID_BRAND");
+            }
+        }
+        else if (cmd == "ATTACK:BF:CAR:STOP") {
+            stopBruteForce();
+            SerialBT.println("OK:BF_CAR_STOPPED");
+        }
+
+        // === REDES ===
+        else if (cmd == "NETWORK:SCAN") {
+            scanNetworks();
+            btSendNetworks();
+        }
+        else if (cmd.startsWith("NETWORK:DEAUTH:")) {
+            int netIdx = cmd.substring(17).toInt();
+            if (netIdx >= 0 && netIdx < (int)getNetworkCount()) {
+                startDeauth(netIdx);
+                enterMenu(MENU_NET_DEAUTH);
+                SerialBT.println("OK:NET_DEAUTH_STARTED");
+            } else {
+                SerialBT.println("ERR:INVALID_NETWORK");
+            }
+        }
+        else if (cmd == "NETWORK:DEAUTH:STOP") {
+            stopDeauth();
+            SerialBT.println("OK:NET_DEAUTH_STOPPED");
+        }
+        else if (cmd.startsWith("NETWORK:EVILTWIN:")) {
+            int netIdx = cmd.substring(19).toInt();
+            if (netIdx >= 0 && netIdx < (int)getNetworkCount()) {
+                startEvilTwin(netIdx);
+                enterMenu(MENU_NET_PASSWORD);
+                SerialBT.println("OK:EVILTWIN_STARTED");
+            } else {
+                SerialBT.println("ERR:INVALID_NETWORK");
+            }
+        }
+        else if (cmd == "NETWORK:EVILTWIN:STOP") {
+            stopEvilTwin();
+            SerialBT.println("OK:EVILTWIN_STOPPED");
+        }
+        else if (cmd.startsWith("NETWORK:PASSWORD:")) {
+            int netIdx = cmd.substring(17).toInt();
+            if (netIdx >= 0 && netIdx < (int)getNetworkCount()) {
+                startEvilTwin(netIdx);
+                enterMenu(MENU_NET_PASSWORD);
+                SerialBT.println("OK:PASSWORD_ATTACK_STARTED");
+            } else {
+                SerialBT.println("ERR:INVALID_NETWORK");
+            }
+        }
+        else if (cmd == "NETWORK:PASSWORD:STOP") {
+            stopEvilTwin();
+            SerialBT.println("OK:PASSWORD_ATTACK_STOPPED");
+        }
+        else if (cmd == "NETWORK:REMOTE:SCAN") {
+            scanRemoteDevices();
+            SerialBT.printf("REMOTE_DEVS:%d\n", getRemoteDeviceCount());
+            for (int i = 0; i < (int)getRemoteDeviceCount(); i++) {
+                RemoteDevice* dev = getRemoteDevice(i);
+                if (dev) {
+                    SerialBT.printf("REMOTE:%d:%s:%s:%d\n",
+                        i, dev->name, dev->ip, dev->port);
+                }
+            }
+            SerialBT.println("--- REMOTE_END ---");
+        }
+
+        // === CONFIGURACOES ===
+        else if (cmd == "SETTINGS:PINS") {
+            enterMenu(MENU_SETTINGS_PINS);
+            SerialBT.println("OK:SETTINGS_PINS");
+        }
+        else if (cmd == "SETTINGS:MODULES") {
+            enterMenu(MENU_SETTINGS_MODULES);
+            SerialBT.println("OK:SETTINGS_MODULES");
+        }
+        else if (cmd.startsWith("SETTINGS:BRIGHTNESS:")) {
+            int val = cmd.substring(20).toInt();
+            if (val >= 0 && val <= 255) {
+                screenBrightness = val;
+                setBrightness(screenBrightness);
+                SerialBT.println("OK:BRIGHTNESS_SET");
+            } else {
+                SerialBT.println("ERR:INVALID_VALUE");
+            }
+        }
+        else if (cmd.startsWith("SETTINGS:CONNECTION:")) {
+            int ctype = cmd.substring(20).toInt();
+            initConnection(ctype);
+            SerialBT.println("OK:CONNECTION_SET");
+        }
+
+        // === QUERIES ===
+        else if (cmd == "GET:STATUS") {
+            btSendStatus();
+        }
+        else if (cmd == "GET:NETWORKS") {
+            btSendNetworks();
+        }
+        else if (cmd == "GET:BTDEVICES") {
+            btSendBTDevices();
+        }
+        else if (cmd == "GET:CC1101:SIGNALS") {
+            btSendCC1101Signals();
+        }
+        else if (cmd == "GET:NRF24:SCAN") {
+            btSendNRF24Scan();
+        }
+        else if (cmd == "GET:NRF24:ANALYZE") {
+            btSendNRF24Analyze();
+        }
+        else if (cmd == "GET:HANDSHAKE") {
+            if (isHandshakeComplete() || getHandshakeMessageCount() > 0) {
+                sendHandshakeViaBluetooth();
+                SerialBT.println("OK:HANDSHAKE_SENT");
+            } else {
+                SerialBT.println("ERR:NO_HANDSHAKE");
+            }
+        }
+        else if (cmd == "GET:BF:STATUS") {
+            btSendBruteForceStatus();
+        }
+
+        // === COMANDO DESCONHECIDO ===
+        else {
+            SerialBT.println("ERR:UNKNOWN_CMD");
+        }
+    }
+}
+
+void menuLoop() {
+    // Controle remoto HTTP (Termux)
+    processBTCommands();
+    apiLoop();
 
     ButtonState btn = readButtons();
 
