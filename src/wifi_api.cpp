@@ -230,6 +230,7 @@ static void handleHandshakeDownload() {
 // POST /api/nrf24/jammer/start
 static void handleNRF24JammerStart() {
     if (!nrf24JammerActive) nrf24StartJammer();
+    yield();
     sendOK("NRF24 Jammer started");
 }
 
@@ -241,6 +242,7 @@ static void handleNRF24JammerStop() {
 
 // POST /api/nrf24/scanner/start
 static void handleNRF24ScannerStart() {
+    yield();
     scannerRunning = true;
     nrf24SpecStart();
     sendOK("NRF24 Scanner started");
@@ -248,6 +250,7 @@ static void handleNRF24ScannerStart() {
 
 // POST /api/nrf24/scanner/stop
 static void handleNRF24ScannerStop() {
+    yield();
     scannerRunning = false;
     nrf24SpecStop();
     sendOK("NRF24 Scanner stopped");
