@@ -149,12 +149,18 @@ extern bool isHandshakeCapturing();
 extern const char* getHandshakeStatus();
 extern uint8_t getHandshakeMessageCount();
 extern bool isHandshakeComplete();
+extern void sendHandshakeViaBluetooth();
 extern void clearHandshakeBuffer();
 
 
 // ============================================================
 // MENU STRUCTURES
 // ============================================================
+struct MenuItem {
+    const char* label;
+    MenuState state;
+};
+
 MenuItem mainMenu[] = {
     {"NRF24", MENU_NRF24},
     {"CC1101", MENU_CC1101},
@@ -702,7 +708,9 @@ void handlePassword(ButtonState btn) {
         if (!evilTwinActive && !isHandshakeComplete() && listIndex < (int)getNetworkCount()) {
             startEvilTwin(listIndex);
         } else if (isHandshakeComplete()) {
-            showMessage("HANDSHAKE", "Captura completa!");
+            // Salva e envia o handshake
+            sendHandshakeViaBluetooth();
+            showMessage("HANDSHAKE", "Enviado via BT!");
             delay(1000);
         } else if (evilTwinActive) {
             stopEvilTwin();
@@ -1254,5 +1262,6 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    delay(50);
+    yield();
+    delay(5);
 }
