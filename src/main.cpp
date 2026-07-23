@@ -19,8 +19,7 @@ void setup() {
     Serial.println("\n[BOOT] Crazy Cat v3.1 starting...");
 
     // ============================================================
-    // WiFi AP (modo seguro no boot — evita conflitos RF no startup)
-    // O modo AP_STA sera ativado apenas durante o scan, em runtime.
+    // WiFi AP PRIMEIRO (antes de tudo que possa crashar)
     // ============================================================
     WiFi.mode(WIFI_OFF);
     delay(100);
@@ -36,14 +35,12 @@ void setup() {
     delay(200);
     Serial.printf("[BOOT] AP CrazyCat: %s\n", apOk ? "OK" : "FAIL");
     Serial.printf("[BOOT] IP: %s\n", WiFi.softAPIP().toString().c_str());
-    yield();
 
     startAPIServer();
     Serial.println("[BOOT] HTTP Server started");
-    yield();
 
     // ============================================================
-    // Display
+    // Display (com watchdog feed)
     // ============================================================
     if (!displayInit()) {
         Serial.println("[BOOT] WARNING: OLED init failed!");
@@ -53,7 +50,6 @@ void setup() {
     yield();
 
     showLoading("Iniciando...", 10);
-    yield();
 
     inputInit();
     showLoading("Botoes OK", 25);
@@ -70,7 +66,6 @@ void setup() {
     showLoading("WiFi AP OK", 80);
     showLoading("Pronto!", 100);
     delay(500);
-    yield();
 
     menuInit();
     Serial.println("[BOOT] Ready!\n");
