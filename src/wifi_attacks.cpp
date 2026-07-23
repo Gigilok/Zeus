@@ -200,7 +200,7 @@ void scanNetworks() {
             scannedNetworks[i].rssi = WiFi.RSSI(i);
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-            scannedNetworks[i].id = i;
+
             Serial.printf("  [%d] %s CH%d %ddBm %s\n", i, scannedNetworks[i].ssid, 
                          scannedNetworks[i].channel, scannedNetworks[i].rssi,
                          scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
