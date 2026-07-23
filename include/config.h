@@ -109,6 +109,11 @@ extern uint8_t networkCount;
 extern uint8_t btDeviceCount;
 extern uint8_t remoteDeviceCount;
 
+struct MenuItem {
+    const char* label;
+    MenuState state;
+};
+
 extern MenuState currentMenu;
 extern MenuState previousMenu;
 extern int8_t menuIndex;
