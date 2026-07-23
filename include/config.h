@@ -127,10 +127,24 @@ extern bool bfRunning;
 extern char capturedPassword[64];
 extern bool passwordCaptured;
 extern bool fakeAPEnabled;
+extern bool evilTwinActive;
 
 // NRF24 Scanner & Jammer
 #define NRF_SCAN_HISTORY    64
 #define NRF_SCAN_BARS       16
 #define NRF_MAX_DETECTED    10
+
+
+// Portal Captive
+extern void startPortal(const char* ssid);
+extern void stopPortal();
+extern void portalLoop();
+extern bool isPortalActive();
+extern const char* getCapturedPassword();
+extern const char* getPortalStatus();
+
+// Evil Twin
+extern void startEvilTwin(uint8_t networkIndex);
+extern void stopEvilTwin();
 
 #endif
