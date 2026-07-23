@@ -9,6 +9,13 @@ extern void menuInit();
 extern void menuLoop();
 extern void showLoading(const char* text, int percent);
 extern void startAPIServer();
+extern void apiLoop();
+
+// Importa as funções e variáveis do wifi_attacks.cpp
+extern bool deauthActive;
+extern bool deauthLoop();
+extern bool droneJammerActive;
+extern bool cameraFreezeActive;
 
 bool nrf24OK = false;
 bool cc1101OK = false;
@@ -37,7 +44,6 @@ void setup() {
 
     // ============================================================
     // AP CrazyCat para controle remoto (Termux)
-    // Adicionado DEPOIS de tudo inicializar (como estava funcionando)
     // ============================================================
     WiFi.mode(WIFI_AP_STA);
     delay(100);
@@ -60,5 +66,28 @@ void setup() {
 }
 
 void loop() {
+    // 1. Processa as requisições HTTP do Termux (CRÍTICO)
+    apiLoop();
+
+    // 2. Processa o ataque Deauth em background (se ativo)
+    if (deauthActive) {
+        deauthLoop();
+    }
+
+    // 3. Processa o Jammer de Drone (se ativo)
+    if (droneJammerActive) {
+        // TODO: Adicione aqui a função que transmite o pacote RF do jammer de drone
+        // Ex: nrf24TransmitDroneJammer();
+        delay(10); // Pequeno delay para não sobrecarregar o processador
+    }
+
+    // 4. Processa o Camera Freeze (se ativo)
+    if (cameraFreezeActive) {
+        // TODO: Adicione aqui a função que transmite o pacote RF do camera freeze
+        // Ex: nrf24TransmitCameraFreeze();
+        delay(50);
+    }
+
+    // 5. Atualiza display, lê botões e navega no menu
     menuLoop();
 }
