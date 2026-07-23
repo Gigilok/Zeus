@@ -149,7 +149,6 @@ extern bool isHandshakeCapturing();
 extern const char* getHandshakeStatus();
 extern uint8_t getHandshakeMessageCount();
 extern bool isHandshakeComplete();
-extern void sendHandshakeViaBluetooth();
 extern void clearHandshakeBuffer();
 
 
@@ -703,9 +702,7 @@ void handlePassword(ButtonState btn) {
         if (!evilTwinActive && !isHandshakeComplete() && listIndex < (int)getNetworkCount()) {
             startEvilTwin(listIndex);
         } else if (isHandshakeComplete()) {
-            // Salva e envia o handshake
-            sendHandshakeViaBluetooth();
-            showMessage("HANDSHAKE", "Enviado via BT!");
+            showMessage("HANDSHAKE", "Captura completa!");
             delay(1000);
         } else if (evilTwinActive) {
             stopEvilTwin();
