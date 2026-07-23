@@ -193,8 +193,7 @@ void scanNetworks() {
     // Scan sincrono. Em AP_STA o AP continua ativo
     // e os clientes (Termux) permanecem conectados.
     int n = WiFi.scanNetworks(false, true, false, 3000);
-    Serial.printf("[WiFi] Scan found %d networks
-", n);
+    Serial.printf("[WiFi] Scan found %d networks\n", n);
 
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
@@ -206,8 +205,7 @@ void scanNetworks() {
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
 
-            Serial.printf("  [%d] %s CH%d %ddBm %s
-", i, scannedNetworks[i].ssid, 
+            Serial.printf("  [%d] %s CH%d %ddBm %s\n", i, scannedNetworks[i].ssid,
                          scannedNetworks[i].channel, scannedNetworks[i].rssi,
                          scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
         }
@@ -215,8 +213,7 @@ void scanNetworks() {
     } else if (n == 0) {
         Serial.println("[WiFi] No networks found");
     } else {
-        Serial.printf("[WiFi] Scan error: %d
-", n);
+        Serial.printf("[WiFi] Scan error: %d\n", n);
     }
 
     // Garante que o AP CrazyCat ainda esta saudavel apos o scan
