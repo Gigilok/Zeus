@@ -175,8 +175,6 @@ static bool isSoftAPActive() {
 // SCAN WIFI - ASSÍNCRONO E NÃO BLOQUEANTE
 // ============================================================
 volatile bool scanInProgress = false;
-volatile bool scanComplete = false;
-volatile int  scanResultCount = 0;
 
 void scanNetworks() {
     if (scanInProgress) {
@@ -186,7 +184,6 @@ void scanNetworks() {
     
     networkCount = 0;
     scanInProgress = true;
-    scanComplete = false;
     
     Serial.println("[WiFi] Starting ASYNC network scan...");
     
@@ -197,21 +194,22 @@ void scanNetworks() {
     }
     
     // Scan assíncrono: não trava o WebServer! 200ms por canal.
-    WiFi.scanNetworksAsync([](int n) {
-        scanResultCount = n;
-        scanComplete = true;
-        scanInProgress = false;
-        Serial.printf("[WiFi] Async scan done: %d networks\n", n);
-    }, false, 200);
+    // O primeiro parametro 'true' indica async.
+    WiFi.scanNetworks(true, false, false, 200);
 }
 
-bool isScanRunning() { return scanInProgress; }
-bool isScanComplete() { return scanComplete; }
+bool isScanRunning() { 
+    return (WiFi.scanComplete() == -1); 
+}
+
+bool isScanComplete() { 
+    return (WiFi.scanComplete() >= 0); 
+}
 
 void collectScanResults() {
-    if (!scanComplete) return;
+    int n = WiFi.scanComplete();
+    if (n < 0) return; // Ainda rodando ou não iniciado
     
-    int n = scanResultCount;
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
         for (int i = 0; i < networkCount; i++) {
@@ -226,14 +224,12 @@ void collectScanResults() {
                          scannedNetworks[i].channel, scannedNetworks[i].rssi,
                          scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
         }
-        WiFi.scanDelete();
     } else if (n == 0) {
         Serial.println("[WiFi] No networks found");
-    } else {
-        Serial.printf("[WiFi] Scan error: %d\n", n);
     }
     
-    scanComplete = false;
+    WiFi.scanDelete();
+    scanInProgress = false;
 }
 
 uint8_t getNetworkCount() { return networkCount; }
