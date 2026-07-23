@@ -180,16 +180,21 @@ void scanNetworks() {
     networkCount = 0;
     Serial.println("[WiFi] Starting network scan...");
 
-    // Remember if we had an AP running
-    bool hadAP = (WiFi.getMode() == WIFI_AP_STA || WiFi.getMode() == WIFI_AP);
+    // CORRECAO: nunca desliga o AP para escanear.
+    // Se estiver em modo AP puro, sobe a interface STA (AP_STA).
+    // Se ja for AP_STA, mantem assim.
+    wifi_mode_t modeBefore = WiFi.getMode();
+    if (modeBefore == WIFI_AP) {
+        Serial.println("[WiFi] Upping STA interface for scan...");
+        WiFi.mode(WIFI_AP_STA);
+        delay(100);
+    }
 
-    // Switch to STA for reliable scan
-    WiFi.mode(WIFI_STA);
-    delay(200);
-
-    // Synchronous scan with 5 second timeout
-    int n = WiFi.scanNetworks(false, true, false, 5000);
-    Serial.printf("[WiFi] Scan found %d networks\n", n);
+    // Scan sincrono. Em AP_STA o AP continua ativo
+    // e os clientes (Termux) permanecem conectados.
+    int n = WiFi.scanNetworks(false, true, false, 3000);
+    Serial.printf("[WiFi] Scan found %d networks
+", n);
 
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
@@ -201,7 +206,8 @@ void scanNetworks() {
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
 
-            Serial.printf("  [%d] %s CH%d %ddBm %s\n", i, scannedNetworks[i].ssid, 
+            Serial.printf("  [%d] %s CH%d %ddBm %s
+", i, scannedNetworks[i].ssid, 
                          scannedNetworks[i].channel, scannedNetworks[i].rssi,
                          scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
         }
@@ -209,23 +215,23 @@ void scanNetworks() {
     } else if (n == 0) {
         Serial.println("[WiFi] No networks found");
     } else {
-        Serial.printf("[WiFi] Scan error: %d\n", n);
+        Serial.printf("[WiFi] Scan error: %d
+", n);
     }
 
-    // Restore CrazyCat AP immediately
-    if (hadAP) {
-        Serial.println("[WiFi] Restoring CrazyCat AP...");
+    // Garante que o AP CrazyCat ainda esta saudavel apos o scan
+    if (WiFi.getMode() == WIFI_STA) {
         WiFi.mode(WIFI_AP_STA);
         delay(100);
+    }
+    if (WiFi.softAPIP() == IPAddress(0,0,0,0)) {
         WiFi.softAPConfig(
             IPAddress(192, 168, 4, 1),
             IPAddress(192, 168, 4, 1),
             IPAddress(255, 255, 255, 0)
         );
-        delay(50);
         WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
-        delay(200);
-        Serial.printf("[WiFi] AP restored: %s\n", WiFi.softAPIP().toString().c_str());
+        Serial.println("[WiFi] AP restored after scan");
     }
 }
 
