@@ -96,6 +96,9 @@ static WebServer apiServer(8080);
 static bool apiRunning = false;
 
 static void sendJSON(int code, const String& json) {
+    apiServer.sendHeader("Access-Control-Allow-Origin", "*");
+    apiServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    apiServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
     apiServer.send(code, "application/json", json);
 }
 
@@ -174,7 +177,31 @@ static void handleScanNetworks() {
     yield();
     scanNetworks();
     yield();
-    sendOK("Scan complete");
+
+    StaticJsonDocument<2048> doc;
+    doc["status"] = "ok";
+    doc["message"] = "Scan complete";
+    doc["count"] = networkCount;
+
+    JsonArray nets = doc.createNestedArray("networks");
+    for (int i = 0; i < (int)networkCount; i++) {
+        NetworkInfo* net = &scannedNetworks[i];
+        JsonObject obj = nets.createNestedObject();
+        obj["id"] = i;
+        obj["ssid"] = net->ssid;
+        obj["channel"] = net->channel;
+        obj["rssi"] = net->rssi;
+        obj["encrypted"] = net->encrypted;
+        char bssid[18];
+        snprintf(bssid, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+            net->bssid[0], net->bssid[1], net->bssid[2],
+            net->bssid[3], net->bssid[4], net->bssid[5]);
+        obj["bssid"] = bssid;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    sendJSON(200, out);
 }
 
 // POST /api/deauth/start?id=N
