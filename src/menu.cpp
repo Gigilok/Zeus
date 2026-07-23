@@ -1,4 +1,5 @@
 #include "config.h"
+#include <WiFi.h>
 #include <Adafruit_SSD1306.h>
 
 struct NRFDevice {
@@ -140,6 +141,11 @@ extern bool isConnectionActive();
 extern const char* getConnectionTypeName();
 extern const char* getPairingCode();
 
+extern void portalLoop();
+extern void stopEvilTwin();
+extern const char* getPortalStatus();
+
+
 // ============================================================
 // MENU STRUCTURES
 // ============================================================
@@ -247,6 +253,7 @@ void goBack() {
     if (droneJammerActive) stopDroneJammer();
     if (btJammerActive) stopBTJammer();
     if (bfRunning) stopBruteForce();
+    if (evilTwinActive) stopEvilTwin();
     if (capturing) { cc1101StopCapture(); capturing = false; }
     if (inListView) inListView = false;
     deauthDetailView = false;
@@ -671,8 +678,12 @@ void renderPassword() {
             snprintf(buf, 64, "Clone: %s", net->ssid);
             drawText(0, 14, buf, 1);
         }
-        drawCenteredText(35, "Aguardando vitima", 1);
-        drawCenteredText(48, "conectar...", 1);
+        drawCenteredText(30, "Aguardando vitima", 1);
+        drawCenteredText(42, getPortalStatus(), 1);
+        int clients = WiFi.softAPgetStationNum();
+        char clientBuf[32];
+        snprintf(clientBuf, 32, "Clientes: %d", clients);
+        drawCenteredText(54, clientBuf, 1);
         updateDisplay();
     } else {
         renderList("CAPTURAR SENHA", getNetworkCount(), drawNetworkItem);
@@ -685,9 +696,9 @@ void handlePassword(ButtonState btn) {
             startEvilTwin(listIndex);
         } else if (passwordCaptured) {
             passwordCaptured = false;
-            stopFakeAP();
+            stopEvilTwin();
         } else if (fakeAPEnabled) {
-            stopFakeAP();
+            stopEvilTwin();
         }
     }
     if (btn == BTN_PRESSED_UP && listIndex > 0) listIndex--;
@@ -1141,6 +1152,11 @@ void menuInit() {
 }
 
 void menuLoop() {
+    // Portal captive loop (quando evil twin ativo)
+    if (evilTwinActive || isPortalActive()) {
+        portalLoop();
+    }
+
     ButtonState btn = readButtons();
 
     // ============================================================
