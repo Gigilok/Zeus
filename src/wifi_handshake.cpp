@@ -1,6 +1,5 @@
 // ============================================================
-// wifi_handshake.cpp - v4.2 Stream Edition
-// Sem SPIFFS. Handshake mantido em RAM e enviado via BT Serial.
+// wifi_handshake.cpp - v4.2 Stream Edition + PCAP Export
 // ============================================================
 #include "wifi_handshake.h"
 #include "config.h"
@@ -8,16 +7,10 @@
 #include <esp_wifi.h>
 #include <sys/time.h>
 
-// ============================================================
-// CONFIGURACOES
-// ============================================================
 #define MAX_EAPOL_FRAMES    24
 #define MAX_FRAME_SIZE      512
 #define EAPOL_ETHERTYPE     0x888E
 
-// ============================================================
-// ESTRUTURAS
-// ============================================================
 struct EapolFrame {
     uint32_t ts_sec;
     uint32_t ts_usec;
@@ -33,12 +26,8 @@ static bool handshakeComplete = false;
 static uint8_t messagesFound = 0;  // bitmask
 static char handshakeStatus[32] = "Parado";
 
-// Base64 para envio BT
 static const char base64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-// ============================================================
-// HELPERS
-// ============================================================
 static uint16_t read16be(const uint8_t* p) {
     return ((uint16_t)p[0] << 8) | p[1];
 }
@@ -111,38 +100,6 @@ static void addEapolFrame(const uint8_t* frameData, uint16_t frameLen, uint8_t m
         (messagesFound & 8) ? 1 : 0);
 }
 
-// ============================================================
-// BASE64 ENCODE
-// ============================================================
-static void base64Encode(const uint8_t* data, size_t len, char* out) {
-    size_t i = 0, j = 0;
-    uint8_t arr3[3], arr4[4];
-    while (len--) {
-        arr3[i++] = *(data++);
-        if (i == 3) {
-            arr4[0] = (arr3[0] & 0xfc) >> 2;
-            arr4[1] = ((arr3[0] & 0x03) << 4) + ((arr3[1] & 0xf0) >> 4);
-            arr4[2] = ((arr3[1] & 0x0f) << 2) + ((arr3[2] & 0xc0) >> 6);
-            arr4[3] = arr3[2] & 0x3f;
-            for (int k = 0; k < 4; k++) out[j++] = base64Chars[arr4[k]];
-            i = 0;
-        }
-    }
-    if (i) {
-        for (int k = i; k < 3; k++) arr3[k] = 0;
-        arr4[0] = (arr3[0] & 0xfc) >> 2;
-        arr4[1] = ((arr3[0] & 0x03) << 4) + ((arr3[1] & 0xf0) >> 4);
-        arr4[2] = ((arr3[1] & 0x0f) << 2) + ((arr3[2] & 0xc0) >> 6);
-        arr4[3] = arr3[2] & 0x3f;
-        for (int k = 0; k < i + 1; k++) out[j++] = base64Chars[arr4[k]];
-        while (i++ < 3) out[j++] = '=';
-    }
-    out[j] = 0;
-}
-
-// ============================================================
-// CALLBACK PROMISCUO
-// ============================================================
 static void handshake_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (!handshakeCapturing) return;
     if (type == WIFI_PKT_MISC) return;
@@ -163,9 +120,6 @@ static void handshake_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type
     }
 }
 
-// ============================================================
-// CONTROLE
-// ============================================================
 void startHandshakeCapture() {
     if (handshakeCapturing) return;
     eapolCount = 0;
@@ -194,13 +148,62 @@ const char* getHandshakeStatus() { return handshakeStatus; }
 uint8_t getHandshakeMessageCount() { return eapolCount; }
 bool isHandshakeComplete() { return handshakeComplete; }
 
-
-// ============================================================
-// LIMPAR BUFFER
-// ============================================================
 void clearHandshakeBuffer() {
     eapolCount = 0;
     messagesFound = 0;
     handshakeComplete = false;
     strcpy(handshakeStatus, "Parado");
+}
+
+// ============================================================
+// EXPORTAR PARA PCAP (Para o Termux quebrar a senha)
+// ============================================================
+String getPcapData() {
+    size_t totalSize = 24; // Global header size
+    for (int i = 0; i < eapolCount; i++) {
+        totalSize += 16 + eapolBuffer[i].len; // Packet header + data
+    }
+    
+    uint8_t* buf = (uint8_t*)malloc(totalSize);
+    if (!buf) return "";
+    
+    size_t offset = 0;
+    
+    // PCAP Global Header (Little Endian)
+    uint32_t magic = 0xa1b2c3d4;
+    uint16_t verMaj = 2;
+    uint16_t verMin = 4;
+    int32_t tz = 0;
+    uint32_t sigfigs = 0;
+    uint32_t snaplen = 65535;
+    uint32_t network = 105; // LINKTYPE_IEEE802_11
+    
+    memcpy(&buf[offset], &magic, 4); offset += 4;
+    memcpy(&buf[offset], &verMaj, 2); offset += 2;
+    memcpy(&buf[offset], &verMin, 2); offset += 2;
+    memcpy(&buf[offset], &tz, 4); offset += 4;
+    memcpy(&buf[offset], &sigfigs, 4); offset += 4;
+    memcpy(&buf[offset], &snaplen, 4); offset += 4;
+    memcpy(&buf[offset], &network, 4); offset += 4;
+    
+    // Pacotes
+    for (int i = 0; i < eapolCount; i++) {
+        EapolFrame* f = &eapolBuffer[i];
+        
+        uint32_t ts_sec = f->ts_sec;
+        uint32_t ts_usec = f->ts_usec;
+        uint32_t incl_len = f->len;
+        uint32_t orig_len = f->len;
+        
+        memcpy(&buf[offset], &ts_sec, 4); offset += 4;
+        memcpy(&buf[offset], &ts_usec, 4); offset += 4;
+        memcpy(&buf[offset], &incl_len, 4); offset += 4;
+        memcpy(&buf[offset], &orig_len, 4); offset += 4;
+        
+        memcpy(&buf[offset], f->data, f->len); offset += f->len;
+    }
+    
+    String result = String((const char*)buf, totalSize);
+    free(buf);
+    return result;
 }
