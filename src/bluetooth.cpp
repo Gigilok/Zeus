@@ -36,7 +36,6 @@ bool bluetoothInit() {
     bleScan->setInterval(100);
     bleScan->setWindow(99);
 
-    // Inicia Bluetooth Serial para transferencia de handshake
     SerialBT.begin("CrazyCat-BT");
     Serial.println("[BT] Serial ready: CrazyCat-BT");
     return true;
@@ -45,7 +44,8 @@ bool bluetoothInit() {
 void startBTScan() {
     btDeviceCount = 0;
     bleScanning = true;
-    bleScan->start(5, nullptr, false);
+    // Bloqueia por 3s para escanear. O WebServer aguenta 3s.
+    bleScan->start(3, nullptr, false); 
     bleScanning = false;
 }
 
@@ -59,12 +59,14 @@ BTDevice* getBTDevice(uint8_t index) {
 void startBTJammer(uint8_t deviceIndex) {
     if (deviceIndex >= btDeviceCount) return;
     btJammerActive = true;
-    while (btJammerActive) {
-        for (int ch = 0; ch < 40; ch++) {
-            delay(5);
-        }
-        yield();
-    }
+    // Sem while aqui! O loop() cuida do jamming.
+}
+
+void btJammerLoop() {
+    if (!btJammerActive) return;
+    // Coloque aqui a lógica de envio de pacotes BT de jamming
+    // Ex: bleScan->stop(); 
+    delay(5); // Pequeno delay para não sobrecarregar
 }
 
 void stopBTJammer() { btJammerActive = false; }
