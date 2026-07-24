@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_attacks.cpp - v4.3 Fast Scan Edition
+// wifi_attacks.cpp - v4.4 Guard Edition
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -147,9 +147,6 @@ static bool isSoftAPActive() {
     return (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
 }
 
-// ============================================================
-// SCAN WIFI - RÁPIDO E NÃO TRAVANTE (150ms por canal)
-// ============================================================
 void scanNetworks() {
     networkCount = 0;
     Serial.println("[WiFi] Starting FAST sync network scan...");
@@ -160,7 +157,6 @@ void scanNetworks() {
         delay(50);
     }
 
-    // 150ms por canal = ~2 segundos no total. Não trava o WebServer nem o Watchdog.
     int n = WiFi.scanNetworks(false, true, false, 150);
     Serial.printf("[WiFi] Scan found %d networks\n", n);
 
@@ -275,6 +271,7 @@ void stopBssidClone() {
 }
 
 void startDeauth(uint8_t networkIndex) {
+    if (deauthActive) return; // TRAVA: Não inicia se já estiver rodando
     if (networkIndex >= networkCount) return;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
@@ -346,6 +343,8 @@ void stopFakeAP() {
 bool isFakeAPActive() { return fakeAPEnabled; }
 
 void startEvilTwin(uint8_t networkIndex) {
+    if (evilTwinActive) return; // TRAVA: Não inicia se já estiver rodando
+    
     if (networkIndex >= networkCount) return;
 
     stopDeauth();
@@ -408,6 +407,8 @@ void startEvilTwin(uint8_t networkIndex) {
 }
 
 void stopEvilTwin() {
+    if (!evilTwinActive) return; // TRAVA
+    
     deauthActive = false;
     evilTwinActive = false;
     fakeAPEnabled = false;
