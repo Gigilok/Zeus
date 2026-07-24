@@ -14,13 +14,22 @@ extern void apiLoop();
 extern bool deauthActive;
 extern bool deauthLoop();
 
+// Novos loops não-bloqueantes
+extern void bfLoop();
+extern void cc1101CaptureLoop();
+extern void btJammerLoop();
+extern bool cc1101CopyActive;
+extern bool btJammerActive;
+extern bool bfRunning;
+
 bool nrf24OK = false;
 bool cc1101OK = false;
 
 void setup() {
     Serial.begin(115200);
-    Serial.setDebugOutput(true); // Ajuda a ver detalhes se travar
-    delay(2000); // Tempo para estabilizar o USB
+    delay(2000); 
+
+    WiFi.persistent(false);
 
     if (!displayInit()) {
         Serial.println("OLED init failed!");
@@ -36,20 +45,10 @@ void setup() {
     cc1101OK = cc1101Init();
     showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
 
-    // Modo original que funcionava
-    WiFi.mode(WIFI_STA);
-    delay(100);
-    showLoading("WiFi OK", 80);
-
-    // AP CrazyCat para controle remoto (Termux)
     WiFi.mode(WIFI_AP_STA);
+    delay(200);
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
     delay(100);
-    WiFi.softAPConfig(
-        IPAddress(192, 168, 4, 1),
-        IPAddress(192, 168, 4, 1),
-        IPAddress(255, 255, 255, 0)
-    );
-    delay(50);
     WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
     delay(200);
 
@@ -63,14 +62,15 @@ void setup() {
 }
 
 void loop() {
-    // 1. Processa as requisições HTTP do Termux
+    // 1. Processa requisições HTTP do Termux (CRÍTICO)
     apiLoop();
 
-    // 2. Processa o ataque Deauth em background (se ativo)
-    if (deauthActive) {
-        deauthLoop();
-    }
+    // 2. Loops de ferramentas em background (Não bloqueantes)
+    if (deauthActive) deauthLoop();
+    if (bfRunning) bfLoop();
+    if (cc1101CopyActive) cc1101CaptureLoop();
+    if (btJammerActive) btJammerLoop();
 
-    // 3. Atualiza display, lê botões e navega no menu
+    // 3. Atualiza display e lê botões
     menuLoop();
 }
