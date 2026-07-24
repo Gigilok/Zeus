@@ -22,6 +22,10 @@ bool cc1101OK = false;
 
 void setup() {
     Serial.begin(115200);
+    delay(2000); // Delay para estabilizar o monitor serial e evitar crash inicial
+
+    // Evita travamentos por escrita excessiva na memória flash (NVS)
+    WiFi.persistent(false);
 
     if (!displayInit()) {
         Serial.println("OLED init failed!");
@@ -37,10 +41,6 @@ void setup() {
 
     cc1101OK = cc1101Init();
     showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
-
-    // WiFi como STA (modo original que funcionava)
-    WiFi.mode(WIFI_STA);
-    showLoading("WiFi OK", 80);
 
     // ============================================================
     // AP CrazyCat para controle remoto (Termux)
@@ -78,7 +78,7 @@ void loop() {
     if (droneJammerActive) {
         // TODO: Adicione aqui a função que transmite o pacote RF do jammer de drone
         // Ex: nrf24TransmitDroneJammer();
-        delay(10); // Pequeno delay para não sobrecarregar o processador
+        delay(10); 
     }
 
     // 4. Processa o Camera Freeze (se ativo)
