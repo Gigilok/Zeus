@@ -17,14 +17,17 @@ extern bool deauthLoop();
 extern bool droneJammerActive;
 extern bool cameraFreezeActive;
 
+// Importa o loop do NRF24 (verifique se o nome da função no seu nrf24.cpp é esse)
+extern bool scannerRunning;
+extern void nrf24Loop(); 
+
 bool nrf24OK = false;
 bool cc1101OK = false;
 
 void setup() {
     Serial.begin(115200);
-    delay(2000); // Delay para estabilizar o monitor serial e evitar crash inicial
+    delay(2000); 
 
-    // Evita travamentos por escrita excessiva na memória flash (NVS)
     WiFi.persistent(false);
 
     if (!displayInit()) {
@@ -42,9 +45,7 @@ void setup() {
     cc1101OK = cc1101Init();
     showLoading(cc1101OK ? "CC1101 OK" : "CC1101 FAIL", 60);
 
-    // ============================================================
-    // AP CrazyCat para controle remoto (Termux)
-    // ============================================================
+    // AP CrazyCat para controle remoto
     WiFi.mode(WIFI_AP_STA);
     delay(100);
     WiFi.softAPConfig(
@@ -66,7 +67,7 @@ void setup() {
 }
 
 void loop() {
-    // 1. Processa as requisições HTTP do Termux (CRÍTICO)
+    // 1. Processa as requisições HTTP do Termux
     apiLoop();
 
     // 2. Processa o ataque Deauth em background (se ativo)
@@ -74,20 +75,11 @@ void loop() {
         deauthLoop();
     }
 
-    // 3. Processa o Jammer de Drone (se ativo)
-    if (droneJammerActive) {
-        // TODO: Adicione aqui a função que transmite o pacote RF do jammer de drone
-        // Ex: nrf24TransmitDroneJammer();
-        delay(10); 
+    // 3. Processa o Scanner e Jammer do NRF24 (CRÍTICO PARA PEGAR PACOTES)
+    if (scannerRunning) {
+        nrf24Loop(); // Se a sua função se chamar diferente, ajuste aqui
     }
 
-    // 4. Processa o Camera Freeze (se ativo)
-    if (cameraFreezeActive) {
-        // TODO: Adicione aqui a função que transmite o pacote RF do camera freeze
-        // Ex: nrf24TransmitCameraFreeze();
-        delay(50);
-    }
-
-    // 5. Atualiza display, lê botões e navega no menu
+    // 4. Atualiza display, lê botões e navega no menu
     menuLoop();
 }
