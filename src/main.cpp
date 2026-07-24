@@ -17,10 +17,6 @@ extern bool deauthLoop();
 extern bool droneJammerActive;
 extern bool cameraFreezeActive;
 
-// Importa o loop do NRF24 (verifique se o nome da função no seu nrf24.cpp é esse)
-extern bool scannerRunning;
-extern void nrf24Loop(); 
-
 bool nrf24OK = false;
 bool cc1101OK = false;
 
@@ -75,11 +71,7 @@ void loop() {
         deauthLoop();
     }
 
-    // 3. Processa o Scanner e Jammer do NRF24 (CRÍTICO PARA PEGAR PACOTES)
-    if (scannerRunning) {
-        nrf24Loop(); // Se a sua função se chamar diferente, ajuste aqui
-    }
-
-    // 4. Atualiza display, lê botões e navega no menu
+    // 3. Atualiza display, lê botões e navega no menu
+    // (O menuLoop provavelmente já cuida do processamento do NRF24)
     menuLoop();
 }
