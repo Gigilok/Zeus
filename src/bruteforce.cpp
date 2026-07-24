@@ -45,33 +45,55 @@ CarCodes carDatabase[] = {
 const uint8_t carBrandCount = sizeof(carDatabase) / sizeof(carDatabase[0]);
 
 uint16_t currentBFIndex = 0;
+static bool bfIsGate = false;
+static uint8_t bfCarBrand = 0;
+static unsigned long bfLastTime = 0;
 
 void startGateBruteForce() {
     bfRunning = true;
     currentBFIndex = 0;
-    while (bfRunning && currentBFIndex < gateCodeCount) {
-        currentBFIndex++;
-        delay(200);
-        yield();
-    }
-    bfRunning = false;
+    bfIsGate = true;
+    bfLastTime = 0;
 }
 
 void startCarBruteForce(uint8_t brandIndex) {
     if (brandIndex >= carBrandCount) return;
     bfRunning = true;
     currentBFIndex = 0;
-    while (bfRunning && currentBFIndex < carDatabase[brandIndex].codeCount) {
-        currentBFIndex++;
-        delay(300);
-        yield();
-    }
-    bfRunning = false;
+    bfIsGate = false;
+    bfCarBrand = brandIndex;
+    bfLastTime = 0;
 }
 
 void stopBruteForce() { bfRunning = false; }
 bool isBruteForceRunning() { return bfRunning; }
 uint16_t getCurrentBFIndex() { return currentBFIndex; }
+
+// Esta função roda no loop() principal, sem travar o ESP32
+void bfLoop() {
+    if (!bfRunning) return;
+    
+    unsigned long interval = bfIsGate ? 200 : 300;
+    if (millis() - bfLastTime >= interval) {
+        bfLastTime = millis();
+        
+        if (bfIsGate) {
+            if (currentBFIndex < gateCodeCount) {
+                // TODO: Enviar código gateCodes[currentBFIndex] via RF
+                currentBFIndex++;
+            } else {
+                bfRunning = false; // Terminou
+            }
+        } else {
+            if (currentBFIndex < carDatabase[bfCarBrand].codeCount) {
+                // TODO: Enviar código carDatabase[bfCarBrand].codes[currentBFIndex] via RF
+                currentBFIndex++;
+            } else {
+                bfRunning = false; // Terminou
+            }
+        }
+    }
+}
 
 uint16_t getTotalBFCount(uint8_t type, uint8_t brandIndex) {
     if (type == 0) return gateCodeCount;
