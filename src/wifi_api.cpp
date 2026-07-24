@@ -9,9 +9,8 @@
 #include <ArduinoJson.h>
 
 // ============================================================
-// FORWARD DECLARATIONS (de outros .cpp)
+// FORWARD DECLARATIONS
 // ============================================================
-// Menu
 extern MenuItem* currentMenuItems;
 extern uint8_t currentMenuItemCount;
 extern const char* currentMenuTitle;
@@ -23,11 +22,7 @@ extern unsigned long captureStartTime;
 extern void enterMenu(MenuState state);
 extern void goBack();
 
-// WiFi/Attacks
 extern void scanNetworks();
-extern bool isScanRunning();
-extern bool isScanComplete();
-extern void collectScanResults();
 extern uint8_t getNetworkCount();
 extern NetworkInfo* getNetwork(uint8_t);
 extern void startDeauth(uint8_t);
@@ -37,7 +32,6 @@ extern void stopEvilTwin();
 extern void startFakeAP(const char*);
 extern void stopFakeAP();
 
-// NRF24
 extern bool nrf24JammerActive;
 extern void nrf24StartJammer();
 extern void nrf24StopJammer();
@@ -52,7 +46,6 @@ extern uint8_t nrf24GetSavedCount();
 extern uint8_t nrf24GetDetectedCount();
 extern uint8_t nrf24GetAnalyzeSelected();
 
-// CC1101
 extern bool cc1101CopyActive;
 extern void cc1101StartCapture();
 extern void cc1101StopCapture();
@@ -60,7 +53,6 @@ extern void cc1101ReplaySignal(uint8_t);
 extern uint8_t cc1101GetSavedCount();
 extern SignalData* cc1101GetSignal(uint8_t);
 
-// BT
 extern uint8_t btDeviceCount;
 extern void startBTScan();
 extern void startBTJammer(uint8_t);
@@ -68,7 +60,6 @@ extern void stopBTJammer();
 extern uint8_t getBTDeviceCount();
 extern BTDevice* getBTDevice(uint8_t);
 
-// BruteForce
 extern bool bfRunning;
 extern void startGateBruteForce();
 extern void stopBruteForce();
@@ -77,7 +68,6 @@ extern uint16_t getCurrentBFIndex();
 extern uint16_t getTotalBFCount(uint8_t, uint8_t);
 extern uint8_t getCarBrandCount();
 
-// Drone/Camera
 extern bool droneJammerActive;
 extern void startDroneJammer();
 extern void stopDroneJammer();
@@ -85,16 +75,9 @@ extern bool cameraFreezeActive;
 extern void startCameraFreeze();
 extern void stopCameraFreeze();
 
-// Settings
 extern void initConnection(int);
-extern void setBrightness(uint8_t);
-
-// Display
 extern void setBrightness(uint8_t brightness);
 
-// ============================================================
-// SERVER
-// ============================================================
 static WebServer apiServer(8080);
 static bool apiRunning = false;
 
@@ -124,10 +107,6 @@ static void sendERR(const String& msg) {
     sendJSON(400, out);
 }
 
-// ============================================================
-// ENDPOINTS
-// ============================================================
-
 // GET /api/status
 static void handleStatus() {
     DynamicJsonDocument doc(512);
@@ -155,10 +134,6 @@ static void handleStatus() {
 
 // GET /api/networks
 static void handleNetworks() {
-    if (isScanComplete()) {
-        collectScanResults();
-    }
-    
     DynamicJsonDocument doc(2048);
     JsonArray nets = doc.createNestedArray("networks");
     for (int i = 0; i < (int)networkCount; i++) {
@@ -182,40 +157,34 @@ static void handleNetworks() {
 
 // POST /api/networks/scan
 static void handleScanNetworks() {
-    if (isScanRunning()) {
-        DynamicJsonDocument doc(128);
-        doc["status"] = "scanning";
-        doc["message"] = "Scan already in progress";
-        String out;
-        serializeJson(doc, out);
-        sendJSON(202, out);
-        return;
-    }
-    
-    scanNetworks();
+    yield();
+    scanNetworks(); // Bloqueia por ~2 segundos, mas não trava o watchdog
     yield();
     
-    DynamicJsonDocument doc(128);
-    doc["status"] = "started";
-    doc["message"] = "Scan started. Poll /api/networks/scan/status to check";
-    String out;
-    serializeJson(doc, out);
-    sendJSON(202, out);
-}
-
-// GET /api/networks/scan/status
-static void handleScanStatus() {
-    DynamicJsonDocument doc(256);
-    doc["scanning"] = isScanRunning();
-    doc["complete"] = isScanComplete();
+    DynamicJsonDocument doc(2048);
+    doc["status"] = "ok";
+    doc["message"] = "Scan complete";
     doc["count"] = networkCount;
+
+    JsonArray nets = doc.createNestedArray("networks");
+    for (int i = 0; i < (int)networkCount; i++) {
+        NetworkInfo* net = &scannedNetworks[i];
+        JsonObject obj = nets.createNestedObject();
+        obj["id"] = i;
+        obj["ssid"] = net->ssid;
+        obj["channel"] = net->channel;
+        obj["rssi"] = net->rssi;
+        obj["encrypted"] = net->encrypted;
+        char bssid[18];
+        snprintf(bssid, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+            net->bssid[0], net->bssid[1], net->bssid[2],
+            net->bssid[3], net->bssid[4], net->bssid[5]);
+        obj["bssid"] = bssid;
+    }
+
     String out;
     serializeJson(doc, out);
     sendJSON(200, out);
-    
-    if (isScanComplete()) {
-        collectScanResults();
-    }
 }
 
 // POST /api/deauth/start?id=N
@@ -263,10 +232,10 @@ static void handleHandshakeStatus() {
 // GET /api/handshake/download
 static void handleHandshakeDownload() {
     if (getHandshakeMessageCount() == 0) {
-        sendERR("No handshake captured. Use Evil Twin first (Redes WiFi > Evil Twin)");
+        sendERR("No handshake captured.");
         return;
     }
-    sendERR("Download not yet implemented - use GET /api/handshake for status");
+    sendERR("Download not yet implemented");
 }
 
 // POST /api/nrf24/jammer/start
@@ -503,9 +472,6 @@ static void handleButton() {
     sendOK("Button " + action + " pressed");
 }
 
-// ============================================================
-// SETUP
-// ============================================================
 void startAPIServer() {
     if (apiRunning) return;
 
@@ -523,7 +489,6 @@ void startAPIServer() {
     apiServer.on("/api/status", HTTP_GET, handleStatus);
     apiServer.on("/api/networks", HTTP_GET, handleNetworks);
     apiServer.on("/api/networks/scan", HTTP_POST, handleScanNetworks);
-    apiServer.on("/api/networks/scan/status", HTTP_GET, handleScanStatus);
     apiServer.on("/api/deauth/start", HTTP_POST, handleDeauthStart);
     apiServer.on("/api/deauth/stop", HTTP_POST, handleDeauthStop);
     apiServer.on("/api/eviltwin/start", HTTP_POST, handleEvilTwinStart);
