@@ -107,7 +107,7 @@ static void sendJSON(int code, const String& json) {
 }
 
 static void sendOK(const String& msg) {
-    StaticJsonDocument<256> doc;
+    DynamicJsonDocument doc(256);
     doc["status"] = "ok";
     doc["message"] = msg;
     String out;
@@ -116,7 +116,7 @@ static void sendOK(const String& msg) {
 }
 
 static void sendERR(const String& msg) {
-    StaticJsonDocument<256> doc;
+    DynamicJsonDocument doc(256);
     doc["status"] = "error";
     doc["message"] = msg;
     String out;
@@ -130,7 +130,7 @@ static void sendERR(const String& msg) {
 
 // GET /api/status
 static void handleStatus() {
-    StaticJsonDocument<512> doc;
+    DynamicJsonDocument doc(512);
     doc["menu"] = (int)currentMenu;
     doc["menu_name"] = currentMenuTitle ? currentMenuTitle : "";
     doc["deauth_active"] = deauthActive;
@@ -159,7 +159,7 @@ static void handleNetworks() {
         collectScanResults();
     }
     
-    StaticJsonDocument<2048> doc;
+    DynamicJsonDocument doc(2048);
     JsonArray nets = doc.createNestedArray("networks");
     for (int i = 0; i < (int)networkCount; i++) {
         NetworkInfo* net = &scannedNetworks[i];
@@ -183,7 +183,7 @@ static void handleNetworks() {
 // POST /api/networks/scan
 static void handleScanNetworks() {
     if (isScanRunning()) {
-        StaticJsonDocument<128> doc;
+        DynamicJsonDocument doc(128);
         doc["status"] = "scanning";
         doc["message"] = "Scan already in progress";
         String out;
@@ -195,7 +195,7 @@ static void handleScanNetworks() {
     scanNetworks();
     yield();
     
-    StaticJsonDocument<128> doc;
+    DynamicJsonDocument doc(128);
     doc["status"] = "started";
     doc["message"] = "Scan started. Poll /api/networks/scan/status to check";
     String out;
@@ -205,7 +205,7 @@ static void handleScanNetworks() {
 
 // GET /api/networks/scan/status
 static void handleScanStatus() {
-    StaticJsonDocument<256> doc;
+    DynamicJsonDocument doc(256);
     doc["scanning"] = isScanRunning();
     doc["complete"] = isScanComplete();
     doc["count"] = networkCount;
@@ -250,7 +250,7 @@ static void handleEvilTwinStop() {
 
 // GET /api/handshake
 static void handleHandshakeStatus() {
-    StaticJsonDocument<256> doc;
+    DynamicJsonDocument doc(256);
     doc["capturing"] = isHandshakeCapturing();
     doc["complete"] = isHandshakeComplete();
     doc["frames"] = getHandshakeMessageCount();
@@ -297,7 +297,7 @@ static void handleNRF24ScannerStop() {
 
 // GET /api/nrf24/scan
 static void handleNRF24ScanData() {
-    StaticJsonDocument<512> doc;
+    DynamicJsonDocument doc(512);
     const int8_t* bars = nrf24GetScanBarData();
     JsonArray arr = doc.createNestedArray("bars");
     for (int i = 0; i < 16; i++) arr.add(bars[i]);
@@ -334,7 +334,7 @@ static void handleCC1101Replay() {
 
 // GET /api/cc1101/signals
 static void handleCC1101Signals() {
-    StaticJsonDocument<1024> doc;
+    DynamicJsonDocument doc(1024);
     JsonArray arr = doc.createNestedArray("signals");
     for (int i = 0; i < (int)cc1101GetSavedCount(); i++) {
         SignalData* sig = cc1101GetSignal(i);
@@ -382,7 +382,7 @@ static void handleBTScan() {
 
 // GET /api/attack/bt/devices
 static void handleBTDevices() {
-    StaticJsonDocument<1024> doc;
+    DynamicJsonDocument doc(1024);
     JsonArray arr = doc.createNestedArray("devices");
     for (int i = 0; i < (int)btDeviceCount; i++) {
         BTDevice* dev = getBTDevice(i);
@@ -447,7 +447,7 @@ static void handleBFCarStop() {
 
 // GET /api/attack/bf/status
 static void handleBFStatus() {
-    StaticJsonDocument<512> doc;
+    DynamicJsonDocument doc(512);
     doc["running"] = bfRunning;
     doc["current_index"] = getCurrentBFIndex();
     doc["gate_total"] = getTotalBFCount(0, 0);
@@ -509,7 +509,6 @@ static void handleButton() {
 void startAPIServer() {
     if (apiRunning) return;
 
-    // Handler CORS global para QUALQUER rota ( resolve o problema do preflight )
     apiServer.onNotFound([]() {
         if (apiServer.method() == HTTP_OPTIONS) {
             apiServer.sendHeader("Access-Control-Allow-Origin", "*");
