@@ -11,20 +11,19 @@ extern void showLoading(const char* text, int percent);
 extern void startAPIServer();
 extern void apiLoop();
 
-// Importa as funções e variáveis do wifi_attacks.cpp
 extern bool deauthActive;
 extern bool deauthLoop();
-extern bool droneJammerActive;
-extern bool cameraFreezeActive;
 
 bool nrf24OK = false;
 bool cc1101OK = false;
 
 void setup() {
     Serial.begin(115200);
-    delay(2000); 
+    delay(1000); // Delay para estabilizar energia
 
+    // Evita travamentos por escrita na flash e reduz consumo
     WiFi.persistent(false);
+    WiFi.setOutputPower(WIFI_POWER_17_5dBm); // Reduzido para evitar Brownout no USB do celular
 
     if (!displayInit()) {
         Serial.println("OLED init failed!");
@@ -43,15 +42,15 @@ void setup() {
 
     // AP CrazyCat para controle remoto
     WiFi.mode(WIFI_AP_STA);
-    delay(100);
+    delay(200);
     WiFi.softAPConfig(
         IPAddress(192, 168, 4, 1),
         IPAddress(192, 168, 4, 1),
         IPAddress(255, 255, 255, 0)
     );
-    delay(50);
-    WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
     delay(100);
+    WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
+    delay(200);
 
     startAPIServer();
     Serial.println("[WiFi] AP CrazyCat em 192.168.4.1:8080");
@@ -72,6 +71,5 @@ void loop() {
     }
 
     // 3. Atualiza display, lê botões e navega no menu
-    // (O menuLoop provavelmente já cuida do processamento do NRF24)
     menuLoop();
 }
