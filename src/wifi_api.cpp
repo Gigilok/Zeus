@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_api.cpp - Servidor HTTP REST para controle remoto
+// wifi_api.cpp - Servidor HTTP REST (Safe Action Edition)
 // ============================================================
 #include "wifi_api.h"
 #include "config.h"
@@ -8,9 +8,6 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 
-// ============================================================
-// FORWARD DECLARATIONS
-// ============================================================
 extern MenuItem* currentMenuItems;
 extern uint8_t currentMenuItemCount;
 extern const char* currentMenuTitle;
@@ -81,6 +78,13 @@ extern void setBrightness(uint8_t brightness);
 static WebServer apiServer(8080);
 static bool apiRunning = false;
 
+// Variáveis para execução segura de ações que mudam o estado do WiFi
+static volatile bool pendingDeauthStart = false;
+static volatile bool pendingEvilTwinStart = false;
+static volatile bool pendingDeauthStop = false;
+static volatile bool pendingEvilTwinStop = false;
+static volatile int pendingNetIdx = -1;
+
 static void sendJSON(int code, const String& json) {
     apiServer.sendHeader("Access-Control-Allow-Origin", "*");
     apiServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -107,7 +111,6 @@ static void sendERR(const String& msg) {
     sendJSON(400, out);
 }
 
-// GET /api/status
 static void handleStatus() {
     DynamicJsonDocument doc(512);
     doc["menu"] = (int)currentMenu;
@@ -132,7 +135,6 @@ static void handleStatus() {
     sendJSON(200, out);
 }
 
-// GET /api/networks
 static void handleNetworks() {
     DynamicJsonDocument doc(2048);
     JsonArray nets = doc.createNestedArray("networks");
@@ -155,7 +157,6 @@ static void handleNetworks() {
     sendJSON(200, out);
 }
 
-// POST /api/networks/scan
 static void handleScanNetworks() {
     yield();
     scanNetworks(); 
@@ -187,51 +188,36 @@ static void handleScanNetworks() {
     sendJSON(200, out);
 }
 
-// POST /api/deauth/start?id=N
 static void handleDeauthStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
     
-    // ENVIA A RESPOSTA PRIMEIRO PARA NÃO DAR TIMEOUT NO TERMUX
-    sendOK("Deauth started");
-    delay(100); // Pequeno delay para garantir o envio do pacote TCP
-    
-    startDeauth(netIdx); // Depois derruba o AP e sobe o clone
+    pendingNetIdx = netIdx;
+    pendingDeauthStart = true; // Marca como pendente
+    sendOK("Deauth started"); // Envia resposta segura
 }
 
-// POST /api/deauth/stop
 static void handleDeauthStop() {
-    // ENVIA A RESPOSTA PRIMEIRO
+    pendingDeauthStop = true;
     sendOK("Deauth stopped");
-    delay(100);
-    
-    stopDeauth();
 }
 
-// POST /api/eviltwin/start?id=N
 static void handleEvilTwinStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
     
-    // ENVIA A RESPOSTA PRIMEIRO PARA NÃO DAR TIMEOUT NO TERMUX
+    pendingNetIdx = netIdx;
+    pendingEvilTwinStart = true;
     sendOK("Evil Twin started");
-    delay(100);
-    
-    startEvilTwin(netIdx);
 }
 
-// POST /api/eviltwin/stop
 static void handleEvilTwinStop() {
-    // ENVIA A RESPOSTA PRIMEIRO
+    pendingEvilTwinStop = true;
     sendOK("Evil Twin stopped");
-    delay(100);
-    
-    stopEvilTwin();
 }
 
-// GET /api/handshake
 static void handleHandshakeStatus() {
     DynamicJsonDocument doc(256);
     doc["capturing"] = isHandshakeCapturing();
@@ -243,42 +229,16 @@ static void handleHandshakeStatus() {
     sendJSON(200, out);
 }
 
-// GET /api/handshake/download
 static void handleHandshakeDownload() {
-    if (getHandshakeMessageCount() == 0) {
-        sendERR("No handshake captured.");
-        return;
-    }
+    if (getHandshakeMessageCount() == 0) { sendERR("No handshake captured."); return; }
     sendERR("Download not yet implemented");
 }
 
-// POST /api/nrf24/jammer/start
-static void handleNRF24JammerStart() {
-    if (!nrf24JammerActive) nrf24StartJammer();
-    sendOK("NRF24 Jammer started");
-}
+static void handleNRF24JammerStart() { if (!nrf24JammerActive) nrf24StartJammer(); sendOK("NRF24 Jammer started"); }
+static void handleNRF24JammerStop() { nrf24StopJammer(); sendOK("NRF24 Jammer stopped"); }
+static void handleNRF24ScannerStart() { scannerRunning = true; nrf24SpecStart(); sendOK("NRF24 Scanner started"); }
+static void handleNRF24ScannerStop() { scannerRunning = false; nrf24SpecStop(); sendOK("NRF24 Scanner stopped"); }
 
-// POST /api/nrf24/jammer/stop
-static void handleNRF24JammerStop() {
-    nrf24StopJammer();
-    sendOK("NRF24 Jammer stopped");
-}
-
-// POST /api/nrf24/scanner/start
-static void handleNRF24ScannerStart() {
-    scannerRunning = true;
-    nrf24SpecStart();
-    sendOK("NRF24 Scanner started");
-}
-
-// POST /api/nrf24/scanner/stop
-static void handleNRF24ScannerStop() {
-    scannerRunning = false;
-    nrf24SpecStop();
-    sendOK("NRF24 Scanner stopped");
-}
-
-// GET /api/nrf24/scan
 static void handleNRF24ScanData() {
     DynamicJsonDocument doc(512);
     const int8_t* bars = nrf24GetScanBarData();
@@ -290,32 +250,22 @@ static void handleNRF24ScanData() {
     sendJSON(200, out);
 }
 
-// POST /api/cc1101/copy
 static void handleCC1101Copy() {
     yield();
     if (!capturing) {
-        capturing = true;
-        captureStartTime = millis();
-        cc1101StartCapture();
-        capturing = false;
+        capturing = true; captureStartTime = millis(); cc1101StartCapture(); capturing = false;
     }
     yield();
     sendOK("CC1101 copy started");
 }
 
-// POST /api/cc1101/replay?id=N
 static void handleCC1101Replay() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int idx = apiServer.arg("id").toInt();
-    if (idx < (int)cc1101GetSavedCount()) {
-        cc1101ReplaySignal(idx);
-        sendOK("CC1101 replay");
-    } else {
-        sendERR("Invalid signal id");
-    }
+    if (idx < (int)cc1101GetSavedCount()) { cc1101ReplaySignal(idx); sendOK("CC1101 replay"); } 
+    else { sendERR("Invalid signal id"); }
 }
 
-// GET /api/cc1101/signals
 static void handleCC1101Signals() {
     DynamicJsonDocument doc(1024);
     JsonArray arr = doc.createNestedArray("signals");
@@ -323,47 +273,18 @@ static void handleCC1101Signals() {
         SignalData* sig = cc1101GetSignal(i);
         if (!sig || !sig->valid) continue;
         JsonObject obj = arr.createNestedObject();
-        obj["id"] = i;
-        obj["name"] = sig->name;
-        obj["frequency"] = sig->frequency;
+        obj["id"] = i; obj["name"] = sig->name; obj["frequency"] = sig->frequency;
     }
-    String out;
-    serializeJson(doc, out);
-    sendJSON(200, out);
+    String out; serializeJson(doc, out); sendJSON(200, out);
 }
 
-// POST /api/attack/drone/jammer/start
-static void handleDroneJammerStart() {
-    if (!droneJammerActive) startDroneJammer();
-    sendOK("Drone jammer started");
-}
+static void handleDroneJammerStart() { if (!droneJammerActive) startDroneJammer(); sendOK("Drone jammer started"); }
+static void handleDroneJammerStop() { stopDroneJammer(); sendOK("Drone jammer stopped"); }
+static void handleCameraFreezeStart() { if (!cameraFreezeActive) startCameraFreeze(); sendOK("Camera freeze started"); }
+static void handleCameraFreezeStop() { stopCameraFreeze(); sendOK("Camera freeze stopped"); }
 
-// POST /api/attack/drone/jammer/stop
-static void handleDroneJammerStop() {
-    stopDroneJammer();
-    sendOK("Drone jammer stopped");
-}
+static void handleBTScan() { btDeviceCount = 0; startBTScan(); sendOK("BT scan started"); }
 
-// POST /api/attack/camera/freeze/start
-static void handleCameraFreezeStart() {
-    if (!cameraFreezeActive) startCameraFreeze();
-    sendOK("Camera freeze started");
-}
-
-// POST /api/attack/camera/freeze/stop
-static void handleCameraFreezeStop() {
-    stopCameraFreeze();
-    sendOK("Camera freeze stopped");
-}
-
-// POST /api/attack/bt/scan
-static void handleBTScan() {
-    btDeviceCount = 0;
-    startBTScan();
-    sendOK("BT scan started");
-}
-
-// GET /api/attack/bt/devices
 static void handleBTDevices() {
     DynamicJsonDocument doc(1024);
     JsonArray arr = doc.createNestedArray("devices");
@@ -371,91 +292,45 @@ static void handleBTDevices() {
         BTDevice* dev = getBTDevice(i);
         if (!dev) continue;
         JsonObject obj = arr.createNestedObject();
-        obj["id"] = i;
-        obj["name"] = dev->name;
-        obj["rssi"] = dev->rssi;
+        obj["id"] = i; obj["name"] = dev->name; obj["rssi"] = dev->rssi;
     }
-    String out;
-    serializeJson(doc, out);
-    sendJSON(200, out);
+    String out; serializeJson(doc, out); sendJSON(200, out);
 }
 
-// POST /api/attack/bt/jammer/start?id=N
 static void handleBTJammerStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int idx = apiServer.arg("id").toInt();
-    if (idx < (int)btDeviceCount) {
-        startBTJammer(idx);
-        sendOK("BT jammer started");
-    } else {
-        sendERR("Invalid device id");
-    }
+    if (idx < (int)btDeviceCount) { startBTJammer(idx); sendOK("BT jammer started"); } 
+    else { sendERR("Invalid device id"); }
 }
+static void handleBTJammerStop() { stopBTJammer(); sendOK("BT jammer stopped"); }
 
-// POST /api/attack/bt/jammer/stop
-static void handleBTJammerStop() {
-    stopBTJammer();
-    sendOK("BT jammer stopped");
-}
-
-// POST /api/attack/bf/gate/start
-static void handleBFGateStart() {
-    if (!bfRunning) startGateBruteForce();
-    sendOK("BF Gate started");
-}
-
-// POST /api/attack/bf/gate/stop
-static void handleBFGateStop() {
-    stopBruteForce();
-    sendOK("BF Gate stopped");
-}
-
-// POST /api/attack/bf/car/start?brand=N
+static void handleBFGateStart() { if (!bfRunning) startGateBruteForce(); sendOK("BF Gate started"); }
+static void handleBFGateStop() { stopBruteForce(); sendOK("BF Gate stopped"); }
 static void handleBFCarStart() {
     if (!apiServer.hasArg("brand")) { sendERR("Missing brand"); return; }
     int brand = apiServer.arg("brand").toInt();
-    if (brand < getCarBrandCount()) {
-        if (!bfRunning) startCarBruteForce(brand);
-        sendOK("BF Car started");
-    } else {
-        sendERR("Invalid brand");
-    }
+    if (brand < getCarBrandCount()) { if (!bfRunning) startCarBruteForce(brand); sendOK("BF Car started"); } 
+    else { sendERR("Invalid brand"); }
 }
+static void handleBFCarStop() { stopBruteForce(); sendOK("BF Car stopped"); }
 
-// POST /api/attack/bf/car/stop
-static void handleBFCarStop() {
-    stopBruteForce();
-    sendOK("BF Car stopped");
-}
-
-// GET /api/attack/bf/status
 static void handleBFStatus() {
     DynamicJsonDocument doc(512);
     doc["running"] = bfRunning;
     doc["current_index"] = getCurrentBFIndex();
     doc["gate_total"] = getTotalBFCount(0, 0);
     doc["brand_count"] = getCarBrandCount();
-    String out;
-    serializeJson(doc, out);
-    sendJSON(200, out);
+    String out; serializeJson(doc, out); sendJSON(200, out);
 }
 
-// POST /api/settings/brightness?value=N
 static void handleSetBrightness() {
-    yield();
     if (!apiServer.hasArg("value")) { sendERR("Missing value"); return; }
     int val = apiServer.arg("value").toInt();
-    if (val >= 0 && val <= 255) {
-        screenBrightness = val;
-        setBrightness(screenBrightness);
-        yield();
-        sendOK("Brightness set");
-    } else {
-        sendERR("Invalid value (0-255)");
-    }
+    if (val >= 0 && val <= 255) { screenBrightness = val; setBrightness(screenBrightness); sendOK("Brightness set"); } 
+    else { sendERR("Invalid value (0-255)"); }
 }
 
-// POST /api/menu/navigate?to=MENU_NAME
 static void handleMenuNavigate() {
     if (!apiServer.hasArg("to")) { sendERR("Missing to"); return; }
     String target = apiServer.arg("to");
@@ -469,20 +344,14 @@ static void handleMenuNavigate() {
     sendOK("Menu changed");
 }
 
-// POST /api/btn?action=UP|DOWN|SELECT|BACK
 static void handleButton() {
     if (!apiServer.hasArg("action")) { sendERR("Missing action"); return; }
     String action = apiServer.arg("action");
-    if (action == "UP") {
-        if (menuIndex > 0) menuIndex--;
-    } else if (action == "DOWN") {
-        if (menuIndex < menuMaxIndex) menuIndex++;
-    } else if (action == "SELECT") {
-        if (currentMenuItems && menuIndex < (int)currentMenuItemCount)
-            enterMenu(currentMenuItems[menuIndex].state);
-    } else if (action == "BACK") {
-        goBack();
-    } else { sendERR("Unknown action"); return; }
+    if (action == "UP") { if (menuIndex > 0) menuIndex--; } 
+    else if (action == "DOWN") { if (menuIndex < menuMaxIndex) menuIndex++; } 
+    else if (action == "SELECT") { if (currentMenuItems && menuIndex < (int)currentMenuItemCount) enterMenu(currentMenuItems[menuIndex].state); } 
+    else if (action == "BACK") { goBack(); } 
+    else { sendERR("Unknown action"); return; }
     sendOK("Button " + action + " pressed");
 }
 
@@ -548,6 +417,24 @@ void stopAPIServer() {
 
 void apiLoop() {
     if (apiRunning) apiServer.handleClient();
+
+    // Processa ações pendentes com segurança (fora do handler HTTP)
+    if (pendingDeauthStart) {
+        pendingDeauthStart = false;
+        startDeauth(pendingNetIdx);
+    }
+    if (pendingEvilTwinStart) {
+        pendingEvilTwinStart = false;
+        startEvilTwin(pendingNetIdx);
+    }
+    if (pendingDeauthStop) {
+        pendingDeauthStop = false;
+        stopDeauth();
+    }
+    if (pendingEvilTwinStop) {
+        pendingEvilTwinStop = false;
+        stopEvilTwin();
+    }
 }
 
 bool isAPIServerRunning() { return apiRunning; }
