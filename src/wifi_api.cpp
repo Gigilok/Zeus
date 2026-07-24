@@ -243,7 +243,10 @@ static void handleHandshakeDownload() {
     apiServer.sendHeader("Content-Disposition", "attachment; filename=handshake.pcap");
     apiServer.sendHeader("Content-Length", String(pcapLen));
     apiServer.sendHeader("Connection", "close");
-    apiServer.send(200, "application/vnd.tcpdump.pcap", (const char*)pcapData, pcapLen);
+    
+    // Usa o construtor String com tamanho explicito para não cortar nos bytes 0x00
+    String pcapStr = String((const char*)pcapData, pcapLen);
+    apiServer.send(200, "application/vnd.tcpdump.pcap", pcapStr);
     
     free(pcapData);
 }
