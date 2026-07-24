@@ -23,7 +23,7 @@ void setup() {
 
     // Evita travamentos por escrita na flash e reduz consumo
     WiFi.persistent(false);
-    WiFi.setOutputPower(WIFI_POWER_17_5dBm); // Reduzido para evitar Brownout no USB do celular
+    WiFi.setTxPower(WIFI_POWER_18_5dBm); // Reduzido para evitar Brownout no USB do celular
 
     if (!displayInit()) {
         Serial.println("OLED init failed!");
