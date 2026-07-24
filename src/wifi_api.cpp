@@ -158,7 +158,7 @@ static void handleNetworks() {
 // POST /api/networks/scan
 static void handleScanNetworks() {
     yield();
-    scanNetworks(); // Bloqueia por ~2 segundos, mas não trava o watchdog
+    scanNetworks(); 
     yield();
     
     DynamicJsonDocument doc(2048);
@@ -192,14 +192,21 @@ static void handleDeauthStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
-    startDeauth(netIdx);
+    
+    // ENVIA A RESPOSTA PRIMEIRO PARA NÃO DAR TIMEOUT NO TERMUX
     sendOK("Deauth started");
+    delay(100); // Pequeno delay para garantir o envio do pacote TCP
+    
+    startDeauth(netIdx); // Depois derruba o AP e sobe o clone
 }
 
 // POST /api/deauth/stop
 static void handleDeauthStop() {
-    stopDeauth();
+    // ENVIA A RESPOSTA PRIMEIRO
     sendOK("Deauth stopped");
+    delay(100);
+    
+    stopDeauth();
 }
 
 // POST /api/eviltwin/start?id=N
@@ -207,14 +214,21 @@ static void handleEvilTwinStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
-    startEvilTwin(netIdx);
+    
+    // ENVIA A RESPOSTA PRIMEIRO PARA NÃO DAR TIMEOUT NO TERMUX
     sendOK("Evil Twin started");
+    delay(100);
+    
+    startEvilTwin(netIdx);
 }
 
 // POST /api/eviltwin/stop
 static void handleEvilTwinStop() {
-    stopEvilTwin();
+    // ENVIA A RESPOSTA PRIMEIRO
     sendOK("Evil Twin stopped");
+    delay(100);
+    
+    stopEvilTwin();
 }
 
 // GET /api/handshake
