@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_handshake.cpp - v4.2 Stream Edition + PCAP Export
+// wifi_handshake.cpp - v4.3 Binary PCAP Edition
 // ============================================================
 #include "wifi_handshake.h"
 #include "config.h"
@@ -16,17 +16,15 @@ struct EapolFrame {
     uint32_t ts_usec;
     uint16_t len;
     uint8_t  data[MAX_FRAME_SIZE];
-    uint8_t  msgType;  // 1=M1, 2=M2, 3=M3, 4=M4
+    uint8_t  msgType;
 };
 
 static EapolFrame eapolBuffer[MAX_EAPOL_FRAMES];
 static uint8_t eapolCount = 0;
 static bool handshakeCapturing = false;
 static bool handshakeComplete = false;
-static uint8_t messagesFound = 0;  // bitmask
+static uint8_t messagesFound = 0;
 static char handshakeStatus[32] = "Parado";
-
-static const char base64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static uint16_t read16be(const uint8_t* p) {
     return ((uint16_t)p[0] << 8) | p[1];
@@ -57,7 +55,7 @@ static bool isEapolFrame(const uint8_t* payload, uint16_t len, uint16_t* dataOff
 static uint8_t identifyEapolMessage(const uint8_t* eapolBody, uint16_t bodyLen) {
     if (bodyLen < 7) return 0;
     uint8_t eapolType = eapolBody[1];
-    if (eapolType != 3) return 0;  // EAPOL-Key
+    if (eapolType != 3) return 0;
 
     uint16_t keyInfo = read16be(&eapolBody[4]);
     bool keyAck = (keyInfo & 0x0200) != 0;
@@ -66,10 +64,10 @@ static uint8_t identifyEapolMessage(const uint8_t* eapolBody, uint16_t bodyLen) 
     bool keyType = (keyInfo & 0x0008) != 0;
     if (!keyType) return 0;
 
-    if (keyAck && !keyMic && !secure) return 1;   // M1
-    if (!keyAck && keyMic && !secure) return 2;   // M2
-    if (keyAck && keyMic && secure)   return 3;   // M3
-    if (!keyAck && keyMic && secure)  return 4;   // M4
+    if (keyAck && !keyMic && !secure) return 1;
+    if (!keyAck && keyMic && !secure) return 2;
+    if (keyAck && keyMic && secure)   return 3;
+    if (!keyAck && keyMic && secure)  return 4;
     return 0;
 }
 
@@ -156,27 +154,26 @@ void clearHandshakeBuffer() {
 }
 
 // ============================================================
-// EXPORTAR PARA PCAP (Para o Termux quebrar a senha)
+// EXPORTAR PARA PCAP BINÁRIO
 // ============================================================
-String getPcapData() {
-    size_t totalSize = 24; // Global header size
+uint8_t* getPcapData(size_t* outLen) {
+    size_t totalSize = 24;
     for (int i = 0; i < eapolCount; i++) {
-        totalSize += 16 + eapolBuffer[i].len; // Packet header + data
+        totalSize += 16 + eapolBuffer[i].len;
     }
     
     uint8_t* buf = (uint8_t*)malloc(totalSize);
-    if (!buf) return "";
+    if (!buf) return nullptr;
     
     size_t offset = 0;
     
-    // PCAP Global Header (Little Endian)
     uint32_t magic = 0xa1b2c3d4;
     uint16_t verMaj = 2;
     uint16_t verMin = 4;
     int32_t tz = 0;
     uint32_t sigfigs = 0;
     uint32_t snaplen = 65535;
-    uint32_t network = 105; // LINKTYPE_IEEE802_11
+    uint32_t network = 105;
     
     memcpy(&buf[offset], &magic, 4); offset += 4;
     memcpy(&buf[offset], &verMaj, 2); offset += 2;
@@ -186,7 +183,6 @@ String getPcapData() {
     memcpy(&buf[offset], &snaplen, 4); offset += 4;
     memcpy(&buf[offset], &network, 4); offset += 4;
     
-    // Pacotes
     for (int i = 0; i < eapolCount; i++) {
         EapolFrame* f = &eapolBuffer[i];
         
@@ -203,7 +199,6 @@ String getPcapData() {
         memcpy(&buf[offset], f->data, f->len); offset += f->len;
     }
     
-    String result = String((const char*)buf, totalSize);
-    free(buf);
-    return result;
+    *outLen = totalSize;
+    return buf;
 }
