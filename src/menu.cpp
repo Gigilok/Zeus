@@ -1216,5 +1216,6 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    yield(); // Substitui o delay(50) para manter o WebServer e os loops de RF responsivos
+    // Pequeno delay para não saturar o I2C (OLED) e evitar SW_RESET (Watchdog)
+    delay(20); 
 }
