@@ -333,7 +333,7 @@ void drawSpecBars() {
     getDisplay().drawLine(0, baseY, SCREEN_WIDTH, baseY, SSD1306_WHITE);
     int y64 = baseY - map(64, 2, 80, 2, maxHeight);
     getDisplay().drawLine(0, y64, SCREEN_WIDTH, y64, SSD1306_WHITE);
-    int y10 = baseY - map(10, 2, 80, 2, maxHeight);
+    int y10 = baseY - map(10, 2, 80,2, maxHeight);
     getDisplay().drawLine(0, y10, SCREEN_WIDTH, y10, SSD1306_WHITE);
 }
 
@@ -512,7 +512,7 @@ void handleNRF24Jammer(ButtonState btn) {
 }
 
 // ============================================================
-// DEAUTH - CORRIGIDO
+// DEAUTH
 // ============================================================
 void drawNetworkItem(int index, int y, bool selected) {
     if (selected) {
@@ -561,7 +561,7 @@ void renderDeauthDetail() {
     drawText(64, 42, buf, 1);
 
     if (!deauthActive) {
-        drawCenteredText(55, "Press SELECT to Start", 1);
+        drawCenteredText(55, "SELECT to Start", 1);
     } else {
         drawCenteredText(55, "SELECT: Stop  BACK: Sair", 1);
     }
@@ -718,7 +718,7 @@ void handlePassword(ButtonState btn) {
 void renderCC1101Copy() {
     clearDisplay();
     drawMenuHeader("COPIAR SINAL");
-    if (capturing) {
+    if (cc1101IsCapturing()) {
         unsigned long elapsed = millis() - captureStartTime;
         int pct = (elapsed * 100) / CAPTURE_DURATION;
         if (pct > 100) pct = 100;
@@ -926,7 +926,7 @@ void renderBFGate() {
         char buf[32];
         snprintf(buf, 32, "%d/%d", getCurrentBFIndex(), getTotalBFCount(0, 0));
         drawCenteredText(25, buf, 1);
-        int pct = (getCurrentBFIndex() * 100) / getTotalBFCount(0, 0);
+        int pct = (getCurrentBFIndex() * 100) / getTotalBFCount(0,0);
         drawProgressBar(14, 40, 100, 8, pct);
         drawCenteredText(55, "SEL: Parar", 1);
     } else {
@@ -1035,11 +1035,8 @@ void renderSettingsConnection() {
 // INPUT HANDLERS
 // ============================================================
 void handleCC1101Copy(ButtonState btn) {
-    if (btn == BTN_PRESSED_SELECT && !capturing) {
-        capturing = true;
-        captureStartTime = millis();
+    if (btn == BTN_PRESSED_SELECT && !cc1101IsCapturing()) {
         cc1101StartCapture();
-        capturing = false;
     }
 }
 
@@ -1158,43 +1155,8 @@ void menuInit() {
     enterMenu(MENU_MAIN);
 }
 
-
 void menuLoop() {
-    // Controle remoto HTTP (Termux)
-    apiLoop();
-
     ButtonState btn = readButtons();
-
-    // ============================================================
-    // MODO DEAUTH: display so atualiza a cada 250ms
-    // deauthLoop roda em loop apertado sem renderizar
-    // ============================================================
-    if (deauthActive && (currentMenu == MENU_ATTACK_DEAUTH || currentMenu == MENU_NET_DEAUTH)) {
-        static unsigned long lastDisplayUpdate = 0;
-
-        // Processa botoes
-        handleDeauth(btn);
-        if (btn == BTN_PRESSED_BACK) goBack();
-
-        // Roda multiplos bursts de deauth por frame
-        for (int burst = 0; burst < 8; burst++) {
-            deauthLoop();
-        }
-
-        // Atualiza display apenas a cada 250ms
-        if (millis() - lastDisplayUpdate > 250) {
-            lastDisplayUpdate = millis();
-            renderDeauth();
-        }
-
-        delay(1);
-        return;
-    }
-
-    // === DEAUTH LOOP normal (quando nao esta na tela de deauth mas deauthActive=true) ===
-    if (deauthActive) {
-        deauthLoop();
-    }
 
     switch (currentMenu) {
         case MENU_MAIN: case MENU_NRF24: case MENU_CC1101: case MENU_ATTACKS:
@@ -1254,5 +1216,5 @@ void menuLoop() {
         case MENU_SETTINGS_CONNECTION: handleSettingsConnection(btn); if (btn == BTN_PRESSED_BACK) goBack(); break;
     }
 
-    delay(50);
+    yield(); // Substitui o delay(50) para manter o WebServer e os loops de RF responsivos
 }
