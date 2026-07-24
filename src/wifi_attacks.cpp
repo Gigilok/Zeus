@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_attacks.cpp - v4.5 Auto-Stop Edition
+// wifi_attacks.cpp - v4.6 Auto-Stop & Guard Edition
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -300,6 +300,11 @@ bool deauthLoop() {
             stopEvilTwin(); 
             return false;
         }
+        if (millis() - cloneStartTime > 60000) {
+            Serial.println("[EvilTwin] Timeout de 60s. Voltando para CrazyCat...");
+            stopEvilTwin();
+            return false;
+        }
     }
 
     deauthBurst();
@@ -445,26 +450,14 @@ RemoteDevice* getRemoteDevice(uint8_t index) {
     return nullptr;
 }
 
-void startCameraFreeze() {
-    cameraFreezeActive = true;
-}
+void startCameraFreeze() { cameraFreezeActive = true; }
 void stopCameraFreeze() { cameraFreezeActive = false; }
 
-void startDroneJammer() {
-    droneJammerActive = true;
-}
+void startDroneJammer() { droneJammerActive = true; }
 void stopDroneJammer() { droneJammerActive = false; }
 
-struct DroneLocation {
-    float distance;
-    int8_t rssi;
-};
-
+struct DroneLocation { float distance; int8_t rssi; };
 DroneLocation droneLoc;
 
-void startDroneLocate() {
-    droneLoc.distance = 0;
-    droneLoc.rssi = -50;
-}
-
+void startDroneLocate() { droneLoc.distance = 0; droneLoc.rssi = -50; }
 DroneLocation* getDroneLocation() { return &droneLoc; }
