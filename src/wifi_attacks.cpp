@@ -5,6 +5,9 @@
 #include <esp_wifi.h>
 #include "config.h"
 
+// Forward declaration para evitar erro de compilação
+void stopEvilTwin();
+
 static uint32_t deauthPacketCount = 0;
 static uint32_t deauthSuccessCount = 0;
 static uint8_t  deauthTargetChannel = 0;
@@ -294,7 +297,6 @@ bool deauthLoop() {
 
     // ==========================================
     // AUTO-STOP DO EVIL TWIN
-    // Se alguém conectar no Evil Twin, espera 3s e volta para CrazyCat
     // ==========================================
     if (evilTwinActive) {
         if (WiFi.softAPgetStationNum() > 0) {
