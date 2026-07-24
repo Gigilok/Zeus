@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_api.cpp - Servidor HTTP REST (Safe Action Edition)
+// wifi_api.cpp - Servidor HTTP REST (Safe Action & PCAP Edition)
 // ============================================================
 #include "wifi_api.h"
 #include "config.h"
@@ -8,6 +8,9 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 
+// ============================================================
+// FORWARD DECLARATIONS
+// ============================================================
 extern MenuItem* currentMenuItems;
 extern uint8_t currentMenuItemCount;
 extern const char* currentMenuTitle;
@@ -75,9 +78,15 @@ extern void stopCameraFreeze();
 extern void initConnection(int);
 extern void setBrightness(uint8_t brightness);
 
+extern String getPcapData(); // Função criada no wifi_handshake.cpp
+
+// ============================================================
+// SERVER
+// ============================================================
 static WebServer apiServer(8080);
 static bool apiRunning = false;
 
+// Variáveis para execução segura de ações que mudam o estado do WiFi
 static volatile bool pendingDeauthStart = false;
 static volatile bool pendingEvilTwinStart = false;
 static volatile bool pendingDeauthStop = false;
@@ -110,6 +119,11 @@ static void sendERR(const String& msg) {
     sendJSON(400, out);
 }
 
+// ============================================================
+// ENDPOINTS
+// ============================================================
+
+// GET /api/status
 static void handleStatus() {
     DynamicJsonDocument doc(512);
     doc["menu"] = (int)currentMenu;
@@ -134,6 +148,7 @@ static void handleStatus() {
     sendJSON(200, out);
 }
 
+// GET /api/networks
 static void handleNetworks() {
     DynamicJsonDocument doc(2048);
     JsonArray nets = doc.createNestedArray("networks");
@@ -156,6 +171,7 @@ static void handleNetworks() {
     sendJSON(200, out);
 }
 
+// POST /api/networks/scan
 static void handleScanNetworks() {
     yield();
     scanNetworks(); 
@@ -187,34 +203,41 @@ static void handleScanNetworks() {
     sendJSON(200, out);
 }
 
+// POST /api/deauth/start?id=N
 static void handleDeauthStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
+    
     pendingNetIdx = netIdx;
     pendingDeauthStart = true; 
     sendOK("Deauth started");
 }
 
+// POST /api/deauth/stop
 static void handleDeauthStop() {
     pendingDeauthStop = true;
     sendOK("Deauth stopped");
 }
 
+// POST /api/eviltwin/start?id=N
 static void handleEvilTwinStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
+    
     pendingNetIdx = netIdx;
     pendingEvilTwinStart = true;
     sendOK("Evil Twin started");
 }
 
+// POST /api/eviltwin/stop
 static void handleEvilTwinStop() {
     pendingEvilTwinStop = true;
     sendOK("Evil Twin stopped");
 }
 
+// GET /api/handshake
 static void handleHandshakeStatus() {
     DynamicJsonDocument doc(256);
     doc["capturing"] = isHandshakeCapturing();
@@ -226,11 +249,25 @@ static void handleHandshakeStatus() {
     sendJSON(200, out);
 }
 
+// GET /api/handshake/download
 static void handleHandshakeDownload() {
-    if (getHandshakeMessageCount() == 0) { sendERR("No handshake captured."); return; }
-    sendERR("Download not yet implemented");
+    if (getHandshakeMessageCount() == 0) {
+        sendERR("No handshake captured. Use Evil Twin first");
+        return;
+    }
+    
+    String pcapData = getPcapData();
+    if (pcapData.length() == 0) {
+        sendERR("Failed to build PCAP file.");
+        return;
+    }
+    
+    apiServer.sendHeader("Content-Disposition", "attachment; filename=handshake.pcap");
+    apiServer.sendHeader("Connection", "close");
+    apiServer.send(200, "application/vnd.tcpdump.pcap", pcapData);
 }
 
+// POST /api/nrf24/jammer/start
 static void handleNRF24JammerStart() { if (!nrf24JammerActive) nrf24StartJammer(); sendOK("NRF24 Jammer started"); }
 static void handleNRF24JammerStop() { nrf24StopJammer(); sendOK("NRF24 Jammer stopped"); }
 static void handleNRF24ScannerStart() { scannerRunning = true; nrf24SpecStart(); sendOK("NRF24 Scanner started"); }
@@ -352,6 +389,9 @@ static void handleButton() {
     sendOK("Button " + action + " pressed");
 }
 
+// ============================================================
+// SETUP
+// ============================================================
 void startAPIServer() {
     if (apiRunning) return;
 
@@ -415,6 +455,7 @@ void stopAPIServer() {
 void apiLoop() {
     if (apiRunning) apiServer.handleClient();
 
+    // Processa ações pendentes com segurança (fora do handler HTTP)
     if (pendingDeauthStart) {
         pendingDeauthStart = false;
         startDeauth(pendingNetIdx);
