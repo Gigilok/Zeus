@@ -1,9 +1,6 @@
 #include <SPI.h>
 #include "config.h"
 
-// CC1101 usa HSPI compartilhado com NRF24
-// Inicializa SPI aqui uma unica vez para ambos
-
 #define CC1101_IOCFG2   0x00
 #define CC1101_IOCFG0   0x02
 #define CC1101_FIFOTHR  0x03
@@ -44,9 +41,20 @@
 bool cc1101Initialized = false;
 static bool spiInitialized = false;
 
-const uint32_t commonFrequencies[] = {
-    315000000, 433920000, 868350000, 915000000
+extern unsigned long captureStartTime; // Vem do menu.cpp
+
+struct SignalCapture {
+    uint32_t timestamps[512];
+    uint8_t values[512];
+    uint16_t count;
+    uint32_t frequency;
+    bool active;
+    bool scanning;
+    unsigned long startTime;
+    uint8_t lastValue;
 };
+
+SignalCapture currentCapture;
 
 void cc1101Select() { digitalWrite(CC1101_CSN, LOW); }
 void cc1101Deselect() { digitalWrite(CC1101_CSN, HIGH); }
@@ -80,9 +88,8 @@ void cc1101SetFrequency(uint32_t freqHz) {
 }
 
 bool cc1101Init() {
-    // Inicializa HSPI uma unica vez (compartilhado com NRF24)
     if (!spiInitialized) {
-        SPI.begin(NRF_SCK, NRF_MISO, NRF_MOSI);  // SCK=18, MISO=19, MOSI=23
+        SPI.begin(NRF_SCK, NRF_MISO, NRF_MOSI);
         SPI.setFrequency(4000000);
         SPI.setDataMode(SPI_MODE0);
         spiInitialized = true;
@@ -93,24 +100,18 @@ bool cc1101Init() {
     pinMode(CC1101_GDO0, INPUT);
     pinMode(CC1101_GDO2, INPUT);
 
-    // Reset
     cc1101Select();
     SPI.transfer(CC1101_SRES);
     delay(1);
     cc1101Deselect();
     delay(10);
 
-    // Verifica PARTNUM (reg 0x30) - CC1101 retorna 0x00
     uint8_t partnum = cc1101ReadReg(0x30);
-    uint8_t version = cc1101ReadReg(0x31);
-
-    // Se nao respondeu, tenta de novo
     if (partnum != 0x00) {
         delay(10);
         cc1101SendCommand(CC1101_SRES);
         delay(10);
         partnum = cc1101ReadReg(0x30);
-        version = cc1101ReadReg(0x31);
     }
 
     if (partnum == 0x00) {
@@ -146,73 +147,61 @@ bool cc1101Init() {
         cc1101Initialized = true;
         return true;
     }
-
     return false;
 }
-
-struct SignalCapture {
-    uint32_t timestamps[512];
-    uint8_t values[512];
-    uint16_t count;
-    uint32_t frequency;
-    bool active;
-};
-
-SignalCapture currentCapture;
 
 void cc1101StartCapture() {
     if (!cc1101Initialized) return;
     cc1101CopyActive = true;
     currentCapture.count = 0;
     currentCapture.active = true;
+    currentCapture.scanning = true; // Inicia varredura de frequência
+    currentCapture.startTime = millis();
+    captureStartTime = currentCapture.startTime; // Sincroniza com o menu
+    currentCapture.frequency = 433920000; // Padrão
+    currentCapture.lastValue = digitalRead(CC1101_GDO0);
+}
 
-    int bestRssi = -128;
-    uint32_t bestFreq = 433920000;
+// Roda no loop() principal, capturando os pulsos sem travar o sistema
+void cc1101CaptureLoop() {
+    if (!cc1101CopyActive) return;
 
-    for (int f = 0; f < 4; f++) {
-        cc1101SetFrequency(commonFrequencies[f]);
+    if (currentCapture.scanning) {
+        // Varredura rápida de frequência (sem delay bloqueante)
+        cc1101SetFrequency(currentCapture.frequency);
         cc1101SendCommand(CC1101_SRX);
-        delay(500);
-        uint8_t rssi_raw = cc1101ReadReg(0x34);
-        int rssi = (rssi_raw >= 128) ? (rssi_raw - 256) / 2 - 74 : rssi_raw / 2 - 74;
-        if (rssi > bestRssi) {
-            bestRssi = rssi;
-            bestFreq = commonFrequencies[f];
-        }
+        currentCapture.scanning = false;
+        currentCapture.startTime = millis();
+        captureStartTime = currentCapture.startTime;
+        currentCapture.lastValue = digitalRead(CC1101_GDO0);
+        return;
     }
 
-    currentCapture.frequency = bestFreq;
-    cc1101SetFrequency(bestFreq);
-    cc1101SendCommand(CC1101_SRX);
-
-    unsigned long startTime = millis();
-    uint8_t lastValue = digitalRead(CC1101_GDO0);
-
-    while (millis() - startTime < CAPTURE_DURATION && currentCapture.count < 512) {
+    if (millis() - currentCapture.startTime < CAPTURE_DURATION && currentCapture.count < 512) {
         uint8_t val = digitalRead(CC1101_GDO0);
-        if (val != lastValue) {
+        if (val != currentCapture.lastValue) {
             currentCapture.timestamps[currentCapture.count] = micros();
             currentCapture.values[currentCapture.count] = val;
             currentCapture.count++;
-            lastValue = val;
+            currentCapture.lastValue = val;
         }
-        yield();
-    }
+    } else {
+        // Tempo de captura esgotado
+        currentCapture.active = false;
+        cc1101CopyActive = false;
+        cc1101SendCommand(CC1101_SIDLE);
 
-    currentCapture.active = false;
-    cc1101CopyActive = false;
-    cc1101SendCommand(CC1101_SIDLE);
-
-    if (currentCapture.count > 10 && savedSignalCount < MAX_SAVED_SIGNALS) {
-        savedSignals[savedSignalCount].length = (currentCapture.count > 64) ? 64 : currentCapture.count;
-        savedSignals[savedSignalCount].frequency = currentCapture.frequency;
-        savedSignals[savedSignalCount].modulation = 0;
-        savedSignals[savedSignalCount].valid = true;
-        for (int i = 0; i < savedSignals[savedSignalCount].length; i++) {
-            savedSignals[savedSignalCount].data[i] = currentCapture.values[i];
+        if (currentCapture.count > 10 && savedSignalCount < MAX_SAVED_SIGNALS) {
+            savedSignals[savedSignalCount].length = (currentCapture.count > 64) ? 64 : currentCapture.count;
+            savedSignals[savedSignalCount].frequency = currentCapture.frequency;
+            savedSignals[savedSignalCount].modulation = 0;
+            savedSignals[savedSignalCount].valid = true;
+            for (int i = 0; i < savedSignals[savedSignalCount].length; i++) {
+                savedSignals[savedSignalCount].data[i] = currentCapture.values[i];
+            }
+            snprintf(savedSignals[savedSignalCount].name, 16, "Sinal %d", savedSignalCount + 1);
+            savedSignalCount++;
         }
-        snprintf(savedSignals[savedSignalCount].name, 16, "Sinal %d", savedSignalCount + 1);
-        savedSignalCount++;
     }
 }
 
