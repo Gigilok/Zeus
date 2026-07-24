@@ -78,7 +78,6 @@ extern void setBrightness(uint8_t brightness);
 static WebServer apiServer(8080);
 static bool apiRunning = false;
 
-// Variáveis para execução segura de ações que mudam o estado do WiFi
 static volatile bool pendingDeauthStart = false;
 static volatile bool pendingEvilTwinStart = false;
 static volatile bool pendingDeauthStop = false;
@@ -192,10 +191,9 @@ static void handleDeauthStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
-    
     pendingNetIdx = netIdx;
-    pendingDeauthStart = true; // Marca como pendente
-    sendOK("Deauth started"); // Envia resposta segura
+    pendingDeauthStart = true; 
+    sendOK("Deauth started");
 }
 
 static void handleDeauthStop() {
@@ -207,7 +205,6 @@ static void handleEvilTwinStart() {
     if (!apiServer.hasArg("id")) { sendERR("Missing id"); return; }
     int netIdx = apiServer.arg("id").toInt();
     if (netIdx < 0 || netIdx >= (int)networkCount) { sendERR("Invalid network id"); return; }
-    
     pendingNetIdx = netIdx;
     pendingEvilTwinStart = true;
     sendOK("Evil Twin started");
@@ -418,7 +415,6 @@ void stopAPIServer() {
 void apiLoop() {
     if (apiRunning) apiServer.handleClient();
 
-    // Processa ações pendentes com segurança (fora do handler HTTP)
     if (pendingDeauthStart) {
         pendingDeauthStart = false;
         startDeauth(pendingNetIdx);
